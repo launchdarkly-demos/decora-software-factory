@@ -9,6 +9,7 @@ max_retries:
   review: 1
   govern: 1
   plan: 2
+  build: 3
 
 stage_timeout_seconds:
   intake: 30
@@ -17,6 +18,7 @@ stage_timeout_seconds:
   govern_plan: 30
   build: 180
   verify: 180
+  ensure_flag: 90
   review: 120
   govern_ship: 30
   draft_pr: 60
@@ -68,6 +70,13 @@ approvals:
 flags:
   required_for_user_facing: true
   must_default_off: true
+
+launchdarkly:
+  project_key: decor-agent-demo-v2
+  environments:
+    - test
+    - production
+  production_environment: production
 
 pull_request:
   draft_only: true

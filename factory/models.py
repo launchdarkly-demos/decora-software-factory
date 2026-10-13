@@ -14,6 +14,7 @@ class Stage(str, Enum):
     AWAIT_HUMAN = "await_human"
     BUILD = "build"
     VERIFY = "verify"
+    ENSURE_FLAG = "ensure_flag"
     REVIEW = "review"
     GOVERN_SHIP = "govern_ship"
     DRAFT_PR = "draft_pr"
@@ -133,6 +134,30 @@ class WorktreeInfo(BaseModel):
     removed: bool = False
 
 
+class FlagAssurance(BaseModel):
+    """What the factory confirmed about the LaunchDarkly flag before review."""
+
+    mode: Literal["live", "offline"]
+    required: bool
+    key: str | None = None
+    project_key: str | None = None
+    url: str | None = None
+    created: bool = False
+    reused: bool = False
+    production_on: bool | None = None
+    production_serves_false: bool | None = None
+    environments_off: bool | None = None
+    detail: str = ""
+
+    def production_off(self) -> bool:
+        return self.production_on is False and self.production_serves_false is True
+
+    def blocks_review(self) -> bool:
+        if not self.required or self.mode != "live":
+            return False
+        return not (self.production_off() and self.environments_off is True)
+
+
 class PullRequestDraft(BaseModel):
     title: str
     body_path: str
@@ -159,6 +184,7 @@ class JobState(BaseModel):
     verify_runs: list[VerifyResult] = Field(default_factory=list)
     review: ReviewReport | None = None
     reviews: list[ReviewReport] = Field(default_factory=list)
+    launchdarkly: FlagAssurance | None = None
     question: str | None = None
     human_answers: list[str] = Field(default_factory=list)
     resume_stage: Stage | None = None

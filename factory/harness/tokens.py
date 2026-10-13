@@ -15,7 +15,7 @@ def charge_provider(job: JobState, result: object, fallback_in: str, fallback_ou
     if usage is None:
         usage = getattr(result, "usage", None)
     if usage is None:
-        charge(job, fallback_in, fallback_out, source="provider")
+        charge(job, fallback_in, fallback_out)
         return
     incoming = getattr(usage, "input_tokens", None)
     outgoing = getattr(usage, "output_tokens", None)

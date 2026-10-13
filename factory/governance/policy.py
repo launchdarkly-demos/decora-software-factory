@@ -25,10 +25,16 @@ class PullRequestRules(BaseModel):
     allow_push: bool = False
 
 
+class LaunchDarklyRules(BaseModel):
+    project_key: str = "decor-agent-demo-v2"
+    environments: list[str] = Field(default_factory=lambda: ["test", "production"])
+    production_environment: str = "production"
+
+
 class Policy(BaseModel):
     version: int = 1
     max_retries: dict[str, int] = Field(
-        default_factory=lambda: {"verify": 2, "review": 1, "govern": 1, "plan": 2}
+        default_factory=lambda: {"verify": 2, "review": 1, "govern": 1, "plan": 2, "build": 3}
     )
     stage_timeout_seconds: dict[str, float] = Field(default_factory=dict)
     command_timeout_seconds: float = 180
@@ -44,6 +50,7 @@ class Policy(BaseModel):
     deny_paths: list[str] = Field(default_factory=lambda: [".env", "app/pim/**"])
     approvals: ApprovalRules = Field(default_factory=ApprovalRules)
     flags: FlagRules = Field(default_factory=FlagRules)
+    launchdarkly: LaunchDarklyRules = Field(default_factory=LaunchDarklyRules)
     pull_request: PullRequestRules = Field(default_factory=PullRequestRules)
 
     def timeout_for(self, stage: str) -> float:
@@ -90,6 +97,12 @@ def load_policy(path: Path) -> Policy:
 
 
 def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Decision:
+    if policy.approvals.pause_on_ambiguous and not job.feature.acceptance and not job.human_answers:
+        return Decision(
+            pause=True,
+            reason="What behavior and acceptance checks should this change implement, and which flag should gate it?",
+            resume_stage="plan",
+        )
     if plan.ambiguous and policy.approvals.pause_on_ambiguous:
         question = plan.questions[0] if plan.questions else "The plan is ambiguous."
         return Decision(pause=True, reason=question, resume_stage="plan")

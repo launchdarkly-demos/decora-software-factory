@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 from factory.errors import FactoryError, GovernanceError
@@ -29,6 +31,9 @@ class ToolLayer:
                 env=self._env(),
                 timeout=self.policy.command_timeout_seconds,
             )
+        except OSError as exc:
+            return CommandReport(argv=argv, exit_code=127, output=f"Command unavailable: {exc.__class__.__name__}",
+                                 passed=False)
         except subprocess.TimeoutExpired as exc:
             output = f"timed out after {self.policy.command_timeout_seconds}s\n{exc}"
             return CommandReport(argv=argv, exit_code=124, output=output, passed=False)
@@ -57,7 +62,7 @@ class ToolLayer:
         text = self.read(rel)
         count = text.count(old)
         if count != 1:
-            raise FactoryError(f"{rel} anchor matched {count} times")
+            raise FactoryError(_anchor_error(rel, text, old, count))
         self.write(rel, text.replace(old, new, 1))
 
     def commit(self, message: str, paths: list[str]) -> str:
@@ -102,11 +107,28 @@ class ToolLayer:
 
     def _env(self) -> dict[str, str]:
         env = git_env()
+        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
         # Do not let git walk out of the worktree into some other repository.
         env["GIT_CEILING_DIRECTORIES"] = str(self.worktree.parent)
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTHONPATH", None)
         env["DECORA_PERSIST"] = "0"
-        for key in ("LD_SDK_KEY", "LAUNCHDARKLY_SDK_KEY"):
+        for key in ("LD_SDK_KEY", "LAUNCHDARKLY_SDK_KEY", "OPENAI_API_KEY", "LAUNCHDARKLY_API_TOKEN"):
             env.pop(key, None)
         return env
+
+
+def _anchor_error(rel: str, text: str, old: str, count: int) -> str:
+    preview = old.replace("\n", "\\n")
+    if len(preview) > 120:
+        preview = preview[:120] + "..."
+    first = next((line for line in old.splitlines() if line.strip()), "")
+    hint = ""
+    if first and text.count(first) == 1:
+        start = text.find(first)
+        following = text[start : start + 180].replace("\n", "\\n")
+        hint = (
+            f" That line exists once. Use only this single line as old, copied exactly: {first!r}. "
+            f"Text at that line: {following}"
+        )
+    return f"{rel} anchor matched {count} times. Anchor was: {preview}.{hint}"

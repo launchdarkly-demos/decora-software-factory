@@ -14,5 +14,6 @@ def build_summary(job: JobState) -> dict[str, object]:
         "tokens": job.usage.model_dump(),
         "retries": dict(job.retries),
         "commits": [item.commit for item in job.builds],
+        "launchdarkly": job.launchdarkly.model_dump() if job.launchdarkly else None,
         "pr": job.pr.model_dump() if job.pr else None,
     }

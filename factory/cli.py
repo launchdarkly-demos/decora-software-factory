@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
+from factory.dotenv import ensure_env_key, read_dotenv_key
 from factory.errors import FactoryError
 from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import load_policy
+from factory.harness.base import AgentHarness
 from factory.harness.mock import MockHarness
 from factory.harness.openai_agents import OpenAIAgentsHarness
 from factory.intake.load import load_feature, load_github_issue
+from factory.launchdarkly.token import resolve_token
 from factory.models import JobEvent, JobState, Stage
 from factory.observability.summary import build_summary
 from factory.orchestrator.machine import Factory
@@ -26,31 +30,50 @@ def project_root() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--repo", type=Path, default=DECORA_REPO)
+    common = argparse.ArgumentParser(add_help=False, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    common.add_argument("--repo", type=Path, default=project_root() / ".factory" / "demo-target")
     common.add_argument("--home", type=Path, default=None)
     common.add_argument("--policy", type=Path, default=None)
-    common.add_argument("--agents", choices=("mock", "openai"), default="mock")
+    common.add_argument(
+        "--agents",
+        choices=("mock", "openai"),
+        default="openai",
+        help="openai calls the Agents SDK; mock is the offline recipe",
+    )
     common.add_argument("--keep-worktree", action="store_true")
     common.add_argument("--push", action="store_true")
+    common.add_argument(
+        "--ld",
+        choices=("auto", "live", "offline"),
+        default="auto",
+        help="auto uses LaunchDarkly when a token resolves; offline skips the live check",
+    )
 
-    parser = argparse.ArgumentParser(prog="factory")
+    parser = argparse.ArgumentParser(prog="factory", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("demo", parents=[common], help="run the room-mood sample in dry-run mode")
+    def add(name: str, help_text: str) -> argparse.ArgumentParser:
+        return sub.add_parser(
+            name,
+            parents=[common],
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            help=help_text,
+        )
 
-    run = sub.add_parser("run", parents=[common], help="run a JSON feature spec")
+    add("demo", "run the room-mood sample in dry-run mode")
+
+    run = add("run", "run a JSON feature spec")
     run.add_argument("spec", type=Path)
 
-    issue = sub.add_parser("issue", parents=[common], help="run a GitHub issue as the feature request")
+    issue = add("issue", "run a GitHub issue as the feature request")
     issue.add_argument("--slug", required=True, help="GitHub owner/name")
     issue.add_argument("--number", type=int, required=True)
 
-    resume = sub.add_parser("resume", parents=[common], help="answer a paused job and continue")
+    resume = add("resume", "answer a paused job and continue")
     resume.add_argument("job_id")
     resume.add_argument("--answer", required=True)
 
-    status = sub.add_parser("status", parents=[common], help="print the stored summary for a job")
+    status = add("status", "print the stored summary for a job")
     status.add_argument("job_id")
 
     args = parser.parse_args(argv)
@@ -83,7 +106,19 @@ def _dispatch(args: argparse.Namespace) -> int:
         print(json.dumps(build_summary(job), indent=2))
         return 0 if job.stage != Stage.FAILED else 1
 
-    harness = OpenAIAgentsHarness() if args.agents == "openai" else MockHarness()
+    harness: AgentHarness
+    if args.agents == "openai":
+        source = ensure_env_key(root, "OPENAI_API_KEY")
+        print(f"OpenAI: live (key from {source})")
+        harness = OpenAIAgentsHarness()
+    else:
+        print("OpenAI: mock (--agents mock)")
+        harness = MockHarness()
+    if not os.environ.get("LAUNCHDARKLY_API_TOKEN", "").strip():
+        token = read_dotenv_key(root / ".env", "LAUNCHDARKLY_API_TOKEN")
+        if token:
+            os.environ["LAUNCHDARKLY_API_TOKEN"] = token
+    _announce_launchdarkly(args.ld, root)
     if args.cmd == "demo":
         before = _porcelain(repo)
         WorktreeManager(home / "worktrees").sweep(repo)
@@ -105,6 +140,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         harness=harness,
         keep_worktree=args.keep_worktree,
         push=args.push,
+        ld_mode=args.ld,
         on_event=_print_event,
     )
     if args.cmd == "resume":
@@ -148,6 +184,10 @@ def _print_summary(job: JobState) -> None:
         f"tokens in={tokens['input_tokens']} out={tokens['output_tokens']} ({tokens['source']})"
     )
     print(f"retries {summary['retries'] or {}}")
+    if job.launchdarkly is not None and job.launchdarkly.url:
+        print(f"flag {job.launchdarkly.url}")
+    elif job.launchdarkly is not None and job.launchdarkly.required and job.launchdarkly.mode == "offline":
+        print(f"flag check skipped: {job.launchdarkly.detail}")
     if job.pr is not None:
         print(f"pr body {job.pr.body_path}")
         if job.pr.dry_run:
@@ -158,6 +198,20 @@ def _print_summary(job: JobState) -> None:
         print(f"paused: {job.question}")
     if job.error:
         print(f"error: {job.error}")
+
+
+def _announce_launchdarkly(mode: str, repo: Path) -> None:
+    if mode == "offline":
+        print("LaunchDarkly: offline (--ld offline)")
+        return
+    token, source = resolve_token(repo)
+    if token:
+        print(f"LaunchDarkly: live (token from {source})")
+        return
+    if mode == "live":
+        print("LaunchDarkly: live (LAUNCHDARKLY_API_TOKEN is unset)")
+        return
+    print("LaunchDarkly: offline (LAUNCHDARKLY_API_TOKEN is unset)")
 
 
 def _porcelain(repo: Path) -> str:

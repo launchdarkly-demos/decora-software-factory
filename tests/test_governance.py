@@ -73,3 +73,13 @@ def test_import_rewrite_matches_the_decora_server_line() -> None:
         "from app.flags import BOARD_INTAKE_FLAG, ROOM_MOOD_FLAG, "
         "build_context, get_flag, set_current_user_tier\n"
     )
+
+
+def test_missing_acceptance_cannot_be_invented_by_planner(tmp_path):
+    from factory.governance.policy import review_plan
+    from tests.support import bare_job, feature, low_plan, policy
+
+    job = bare_job(tmp_path, feature=feature(acceptance=[]))
+    decision = review_plan(policy(), low_plan(), job)
+    assert decision.pause
+    assert decision.resume_stage == "plan"

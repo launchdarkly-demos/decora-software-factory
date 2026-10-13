@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from factory.models import BuildResult, ReviewReport, Stage
 from factory.orchestrator.graph import LEGAL
@@ -20,7 +23,10 @@ from tests.support import (
 
 def test_graph_sends_verification_failures_back_to_the_builder() -> None:
     assert Stage.BUILD in LEGAL[Stage.VERIFY]
-    assert Stage.REVIEW in LEGAL[Stage.VERIFY]
+    assert Stage.ENSURE_FLAG in LEGAL[Stage.VERIFY]
+    assert Stage.REVIEW not in LEGAL[Stage.VERIFY]
+    assert Stage.REVIEW in LEGAL[Stage.ENSURE_FLAG]
+    assert Stage.FAILED in LEGAL[Stage.ENSURE_FLAG]
     assert Stage.DRAFT_PR not in LEGAL[Stage.VERIFY]
 
 
@@ -149,6 +155,50 @@ def test_stage_timeout_fails_the_job(tmp_path: Path) -> None:
     assert job.pr is None
 
 
+def test_unexpected_build_error_removes_the_worktree(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path / "decor")
+
+    class Boom(ScriptedHarness):
+        def build(self, job, tools):
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        make_factory(tmp_path, repo, Boom([low_plan()])).run(feature())
+
+    assert list((tmp_path / "home" / "worktrees").glob("job-*")) == []
+    leftover = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", "factory/job-*"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert leftover == ""
+
+
+def test_bad_edit_returns_to_the_builder(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path / "decor")
+
+    class Flaky(ScriptedHarness):
+        def build(self, job, tools):
+            self.build_calls += 1
+            if self.build_calls == 1:
+                from factory.errors import FactoryError
+
+                raise FactoryError("app/flags.py anchor matched 0 times")
+            return super().build(job, tools)
+
+    job = make_factory(
+        tmp_path,
+        repo,
+        Flaky([low_plan()]),
+        verifier=ScriptedVerifier([passed_verify()]),
+    ).run(feature())
+
+    assert job.stage == Stage.DONE
+    assert job.retries["build"] == 1
+    assert job.pr is not None
+
+
 def test_push_command_fails_closed(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor")
 
@@ -218,6 +268,8 @@ def test_room_mood_demo_loop_on_a_worktree(tmp_path: Path) -> None:
     assert "FLAG_DEFAULT = False" in diff
     assert "FLAG_DEFAULT = True" not in diff
     assert "Draft pull request" in body
+    assert "Live LaunchDarkly check skipped" in body
+    assert job.launchdarkly is not None and job.launchdarkly.mode == "offline"
     assert job.pr is not None and job.pr.dry_run and job.pr.url is None
     assert job.usage.input_tokens > 0
     assert job.review is not None and job.review.verdict == "approve"
@@ -250,7 +302,7 @@ def test_cli_refuses_to_push(capsys) -> None:
 
     code = main(["demo", "--push"])
     assert code == 1
-    assert "Decora" in capsys.readouterr().err
+    assert "will not push" in capsys.readouterr().err
 
 
 class _JumpClock:

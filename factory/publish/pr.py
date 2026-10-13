@@ -73,6 +73,20 @@ class Publisher:
         return draft
 
 
+def _flag_lines(job: JobState) -> list[str]:
+    record = job.launchdarkly
+    if record is not None and record.url:
+        lines = [f"- LaunchDarkly: {record.url}"]
+        if record.created:
+            lines.append("- Created in LaunchDarkly. Targeting is off and the off variation is false.")
+        elif record.reused:
+            lines.append("- Reused the existing LaunchDarkly flag. Targeting is off and the off variation is false.")
+        return lines
+    if record is not None and record.required and record.mode == "offline":
+        return ["- Live LaunchDarkly check skipped (`--ld offline` or no API token)."]
+    return []
+
+
 def render_pr(job: JobState, diff: str) -> str:
     plan = job.plan
     review = job.review
@@ -91,6 +105,7 @@ def render_pr(job: JobState, diff: str) -> str:
         "",
         f"- Key: `{job.feature.flag_key or (plan.flag_key if plan else None)}`",
         "- Code default: off",
+        *_flag_lines(job),
         "- A human turns the flag on in LaunchDarkly. This pull request does not.",
         "",
         "## Implementation plan",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from factory.errors import FactoryError, GovernanceError, RecipeError
 from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import Policy, review_plan, review_ship
 from factory.harness.base import AgentHarness
+from factory.launchdarkly.flags import LaunchDarklyService
 from factory.models import JobEvent, JobState, Stage
 from factory.observability.summary import build_summary
 from factory.observability.trace import JsonLog, Tracer
@@ -44,6 +46,8 @@ class Factory:
         clock: Clock | None = None,
         keep_worktree: bool = False,
         push: bool = False,
+        ld_mode: str = "offline",
+        flag_service: LaunchDarklyService | None = None,
         publisher_runner=None,
         id_factory: Callable[[], str] | None = None,
         on_event: Callable[[JobEvent], None] | None = None,
@@ -56,6 +60,12 @@ class Factory:
         self.verifier = verifier or VerificationGate(self.target_repo, home)
         self.clock = clock or SystemClock()
         self.keep_worktree = keep_worktree
+        self.ld_mode = ld_mode
+        self.flags = flag_service or LaunchDarklyService(
+            mode=ld_mode,
+            policy=policy,
+            target_repo=self.target_repo,
+        )
         self.publisher = Publisher(policy, push=push, runner=publisher_runner)
         self.id_factory = id_factory or (lambda: "job-" + uuid.uuid4().hex[:8])
         self.on_event = on_event
@@ -69,6 +79,7 @@ class Factory:
             Stage.GOVERN_PLAN: self._govern_plan,
             Stage.BUILD: self._build,
             Stage.VERIFY: self._verify,
+            Stage.ENSURE_FLAG: self._ensure_flag,
             Stage.REVIEW: self._review,
             Stage.GOVERN_SHIP: self._govern_ship,
             Stage.DRAFT_PR: self._draft_pr,
@@ -132,7 +143,10 @@ class Factory:
 
     def _bounded(self, job: JobState, handler: Callable[[JobState], Transition]) -> Transition:
         start = self.clock.now()
-        transition = handler(job)
+        try:
+            transition = handler(job)
+        except FactoryError as exc:
+            transition = Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
         limit = self.policy.timeout_for(job.stage.value)
         if self.clock.now() - start > limit:
             return Transition(
@@ -220,8 +234,15 @@ class Factory:
             result = self.harness.build(job, tools)
         except RecipeError as exc:
             return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=Stage.PLAN)
-        except (GovernanceError, FactoryError) as exc:
+        except GovernanceError as exc:
             return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+        except FactoryError as exc:
+            used = job.retries.get("build", 0)
+            if used >= self.policy.max_retries.get("build", 3):
+                return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+            job.retries["build"] = used + 1
+            job.govern_feedback = str(exc)
+            return Transition(stage=Stage.BUILD, detail=str(exc))
         job.builds.append(result)
         self._write_model(job, "build.json", result)
         return Transition(stage=Stage.VERIFY, detail=result.summary)
@@ -235,7 +256,7 @@ class Factory:
             diff_path = self._run_dir(job) / f"verify-{len(job.verify_runs)}.diff"
             diff_path.write_text(tools.diff(job.worktree.base_sha))
         if result.passed:
-            return Transition(stage=Stage.REVIEW, detail="verification passed")
+            return Transition(stage=Stage.ENSURE_FLAG, detail="verification passed")
         if result.classification == "ambiguous":
             return Transition(
                 stage=Stage.AWAIT_HUMAN,
@@ -251,6 +272,19 @@ class Factory:
             )
         job.retries["verify"] = used + 1
         return Transition(stage=Stage.BUILD, detail=f"verification {result.classification}")
+
+    def _ensure_flag(self, job: JobState) -> Transition:
+        try:
+            record = self.flags.ensure(job)
+        except FactoryError as exc:
+            text = self.flags.scrub(str(exc))
+            return Transition(stage=Stage.FAILED, detail=text, error=text)
+        job.launchdarkly = record
+        self._write_model(job, "launchdarkly.json", record)
+        if record.blocks_review():
+            detail = record.detail or "flag is not off in production"
+            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+        return Transition(stage=Stage.REVIEW, detail=record.detail or "flag check recorded")
 
     def _review(self, job: JobState) -> Transition:
         report = self.harness.review(job, self._tools(job))
@@ -313,7 +347,7 @@ class Factory:
             "observability",
             f"duration_ms={summary['duration_ms']} tokens={job.usage.input_tokens}+{job.usage.output_tokens}",
         )
-        terminal = job.stage in {Stage.DONE, Stage.FAILED}
+        terminal = job.stage in {Stage.DONE, Stage.FAILED} or sys.exc_info()[0] is not None
         if terminal and not self.keep_worktree and job.worktree is not None and not job.worktree.removed:
             try:
                 self.execution.destroy(self.target_repo, job.worktree)

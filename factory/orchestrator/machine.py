@@ -1,0 +1,362 @@
+from __future__ import annotations
+
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from factory.clock import Clock, SystemClock
+from factory.context.repo import analyze_repo
+from factory.errors import FactoryError, GovernanceError, RecipeError
+from factory.execution.worktree import WorktreeManager
+from factory.governance.policy import Policy, review_plan, review_ship
+from factory.harness.base import AgentHarness
+from factory.models import JobEvent, JobState, Stage
+from factory.observability.summary import build_summary
+from factory.observability.trace import JsonLog, Tracer
+from factory.orchestrator.graph import COMPONENTS, assert_legal
+from factory.orchestrator.store import JobStore
+from factory.publish.pr import Publisher
+from factory.tools.layer import ToolLayer
+from factory.verification.gate import VerificationGate
+
+
+@dataclass
+class Transition:
+    stage: Stage
+    detail: str
+    error: str | None = None
+    resume_stage: Stage | None = None
+
+
+class Factory:
+    """Drives one job from intake to a draft pull request, or to a human pause."""
+
+    def __init__(
+        self,
+        *,
+        target_repo: Path,
+        home: Path,
+        policy: Policy,
+        harness: AgentHarness,
+        execution: WorktreeManager | None = None,
+        verifier: VerificationGate | None = None,
+        clock: Clock | None = None,
+        keep_worktree: bool = False,
+        push: bool = False,
+        publisher_runner=None,
+        id_factory: Callable[[], str] | None = None,
+        on_event: Callable[[JobEvent], None] | None = None,
+    ) -> None:
+        self.target_repo = target_repo.resolve()
+        self.home = home
+        self.policy = policy
+        self.harness = harness
+        self.execution = execution or WorktreeManager(home / "worktrees")
+        self.verifier = verifier or VerificationGate(self.target_repo, home)
+        self.clock = clock or SystemClock()
+        self.keep_worktree = keep_worktree
+        self.publisher = Publisher(policy, push=push, runner=publisher_runner)
+        self.id_factory = id_factory or (lambda: "job-" + uuid.uuid4().hex[:8])
+        self.on_event = on_event
+        self.store = JobStore(home / "factory.db")
+        self.log: JsonLog | None = None
+        self.tracer: Tracer | None = None
+        self._handlers = {
+            Stage.INTAKE: self._intake,
+            Stage.CONTEXT: self._context,
+            Stage.PLAN: self._plan,
+            Stage.GOVERN_PLAN: self._govern_plan,
+            Stage.BUILD: self._build,
+            Stage.VERIFY: self._verify,
+            Stage.REVIEW: self._review,
+            Stage.GOVERN_SHIP: self._govern_ship,
+            Stage.DRAFT_PR: self._draft_pr,
+        }
+
+    def run(self, feature) -> JobState:
+        now = self.clock.now()
+        job = JobState(
+            id=self.id_factory(),
+            stage=Stage.INTAKE,
+            feature=feature,
+            created_at=now,
+            updated_at=now,
+        )
+        self._open_logs(job)
+        self.store.save(job)
+        self._drive(job)
+        return job
+
+    def resume(self, job_id: str, answer: str) -> JobState:
+        job = self.store.load(job_id)
+        if job.stage != Stage.AWAIT_HUMAN:
+            raise FactoryError(f"{job_id} is in {job.stage.value}, not waiting for a human")
+        if not answer.strip():
+            raise FactoryError("an answer is required to resume")
+        self._open_logs(job)
+        job.human_answers.append(answer.strip())
+        dest = job.resume_stage or Stage.PLAN
+        assert_legal(Stage.AWAIT_HUMAN, dest)
+        job.paused = False
+        job.question = None
+        job.resume_stage = None
+        job.stage = dest
+        job.updated_at = self.clock.now()
+        self._emit(job, "governance", f"human answered; resuming at {dest.value}")
+        self.store.save(job)
+        self._drive(job)
+        return job
+
+    def status(self, job_id: str) -> JobState:
+        return self.store.load(job_id)
+
+    def _drive(self, job: JobState) -> None:
+        try:
+            while job.stage not in (Stage.DONE, Stage.FAILED, Stage.AWAIT_HUMAN):
+                current = job.stage
+                handler = self._handlers[current]
+                if self.tracer is None:
+                    transition = self._bounded(job, handler)
+                else:
+                    with self.tracer.span(
+                        f"stage.{current.value}",
+                        COMPONENTS[current],
+                        job_id=job.id,
+                    ):
+                        transition = self._bounded(job, handler)
+                self._apply(job, current, transition)
+                self.store.save(job)
+        finally:
+            self._finish(job)
+
+    def _bounded(self, job: JobState, handler: Callable[[JobState], Transition]) -> Transition:
+        start = self.clock.now()
+        transition = handler(job)
+        limit = self.policy.timeout_for(job.stage.value)
+        if self.clock.now() - start > limit:
+            return Transition(
+                stage=Stage.FAILED,
+                detail=f"{job.stage.value} timed out",
+                error=f"{job.stage.value} timed out",
+            )
+        return transition
+
+    def _apply(self, job: JobState, current: Stage, transition: Transition) -> None:
+        assert_legal(current, transition.stage)
+        if transition.stage == Stage.FAILED:
+            job.error = transition.error or transition.detail
+        if transition.stage == Stage.AWAIT_HUMAN:
+            job.paused = True
+            job.question = transition.detail
+            job.resume_stage = transition.resume_stage
+        else:
+            job.paused = False
+        job.stage = transition.stage
+        job.updated_at = self.clock.now()
+        self._emit(
+            job,
+            COMPONENTS.get(transition.stage, "orchestrator"),
+            transition.detail,
+            **{"from": current.value},
+        )
+
+    def _intake(self, job: JobState) -> Transition:
+        feature = job.feature
+        if not feature.id.strip() or not feature.title.strip() or not feature.summary.strip():
+            return Transition(
+                stage=Stage.FAILED,
+                detail="feature id, title, and summary are required",
+                error="feature id, title, and summary are required",
+            )
+        return Transition(stage=Stage.CONTEXT, detail=f"accepted {feature.id} from {feature.source}")
+
+    def _context(self, job: JobState) -> Transition:
+        context = analyze_repo(self.target_repo, job.feature)
+        job.context = context
+        self._write_model(job, "context.json", context)
+        return Transition(
+            stage=Stage.PLAN,
+            detail=f"{len(context.top_files)} files considered",
+        )
+
+    def _plan(self, job: JobState) -> Transition:
+        if job.context is None:
+            return Transition(stage=Stage.FAILED, detail="no context", error="no context")
+        plan = self.harness.plan(job, job.context)
+        job.plan = plan
+        self._write_model(job, "implementation_plan.json", plan)
+        return Transition(stage=Stage.GOVERN_PLAN, detail=f"recipe {plan.recipe} risk {plan.risk}")
+
+    def _govern_plan(self, job: JobState) -> Transition:
+        if job.plan is None:
+            return Transition(stage=Stage.FAILED, detail="no plan", error="no plan")
+        decision = review_plan(self.policy, job.plan, job)
+        if decision.pause:
+            if decision.resume_stage == "plan" and job.human_answers:
+                job.retries["plan"] = job.retries.get("plan", 0) + 1
+                if job.retries["plan"] > self.policy.max_retries.get("plan", 2):
+                    return Transition(
+                        stage=Stage.FAILED,
+                        detail="plan stayed ambiguous",
+                        error="plan stayed ambiguous",
+                    )
+            resume = Stage(decision.resume_stage) if decision.resume_stage else Stage.PLAN
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=decision.reason, resume_stage=resume)
+        if not decision.allowed:
+            return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
+        return Transition(stage=Stage.BUILD, detail=decision.reason)
+
+    def _build(self, job: JobState) -> Transition:
+        if job.worktree is None or job.worktree.removed:
+            try:
+                info = self.execution.create(self.target_repo, job.id)
+            except FactoryError as exc:
+                return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+            job.worktree = info
+            self._emit(job, "execution", f"worktree {info.path}", branch=info.branch)
+        tools = self._tools(job)
+        try:
+            result = self.harness.build(job, tools)
+        except RecipeError as exc:
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=Stage.PLAN)
+        except (GovernanceError, FactoryError) as exc:
+            return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+        job.builds.append(result)
+        self._write_model(job, "build.json", result)
+        return Transition(stage=Stage.VERIFY, detail=result.summary)
+
+    def _verify(self, job: JobState) -> Transition:
+        tools = self._tools(job)
+        result = self.verifier.run(job, tools)
+        job.verify_runs.append(result)
+        self._write_model(job, "verify.json", result)
+        if job.worktree is not None:
+            diff_path = self._run_dir(job) / f"verify-{len(job.verify_runs)}.diff"
+            diff_path.write_text(tools.diff(job.worktree.base_sha))
+        if result.passed:
+            return Transition(stage=Stage.REVIEW, detail="verification passed")
+        if result.classification == "ambiguous":
+            return Transition(
+                stage=Stage.AWAIT_HUMAN,
+                detail=result.actionable,
+                resume_stage=Stage.PLAN,
+            )
+        used = job.retries.get("verify", 0)
+        if used >= self.policy.max_retries.get("verify", 2):
+            return Transition(
+                stage=Stage.FAILED,
+                detail="verification retries exhausted",
+                error="verification retries exhausted\n" + result.actionable[-500:],
+            )
+        job.retries["verify"] = used + 1
+        return Transition(stage=Stage.BUILD, detail=f"verification {result.classification}")
+
+    def _review(self, job: JobState) -> Transition:
+        report = self.harness.review(job, self._tools(job))
+        job.review = report
+        job.reviews.append(report)
+        self._write_model(job, "review_report.json", report)
+        if report.verdict == "approve":
+            return Transition(stage=Stage.GOVERN_SHIP, detail=report.summary)
+        if report.verdict == "needs_human":
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=report.summary, resume_stage=Stage.PLAN)
+        used = job.retries.get("review", 0)
+        if used >= self.policy.max_retries.get("review", 1):
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=report.summary, resume_stage=Stage.BUILD)
+        job.retries["review"] = used + 1
+        job.govern_feedback = report.summary
+        return Transition(stage=Stage.BUILD, detail=report.summary)
+
+    def _govern_ship(self, job: JobState) -> Transition:
+        diff = ""
+        if job.worktree is not None and not job.worktree.removed:
+            diff = self._tools(job).diff(job.worktree.base_sha)
+        decision = review_ship(self.policy, job, diff)
+        if decision.allowed:
+            return Transition(stage=Stage.DRAFT_PR, detail=decision.reason)
+        if decision.retry_build:
+            used = job.retries.get("govern", 0)
+            if used >= self.policy.max_retries.get("govern", 1):
+                return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
+            job.retries["govern"] = used + 1
+            job.govern_feedback = decision.reason
+            return Transition(stage=Stage.BUILD, detail=decision.reason)
+        return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
+
+    def _draft_pr(self, job: JobState) -> Transition:
+        diff = ""
+        if job.worktree is not None and not job.worktree.removed:
+            diff = self._tools(job).diff(job.worktree.base_sha)
+        self._run_dir(job).joinpath("diff.patch").write_text(diff)
+        try:
+            job.pr = self.publisher.publish(job, diff, self._run_dir(job))
+        except GovernanceError as exc:
+            return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+        return Transition(stage=Stage.DONE, detail=job.pr.body_path)
+
+    def _finish(self, job: JobState) -> None:
+        run_dir = self._run_dir(job)
+        if (
+            job.worktree is not None
+            and not job.worktree.removed
+            and not (run_dir / "diff.patch").exists()
+        ):
+            try:
+                (run_dir / "diff.patch").write_text(self._tools(job).diff(job.worktree.base_sha))
+            except Exception:
+                pass
+        summary = build_summary(job)
+        (run_dir / "summary.json").write_text(_json(summary))
+        self._emit(
+            job,
+            "observability",
+            f"duration_ms={summary['duration_ms']} tokens={job.usage.input_tokens}+{job.usage.output_tokens}",
+        )
+        terminal = job.stage in {Stage.DONE, Stage.FAILED}
+        if terminal and not self.keep_worktree and job.worktree is not None and not job.worktree.removed:
+            try:
+                self.execution.destroy(self.target_repo, job.worktree)
+                job.worktree.removed = True
+            except Exception as exc:
+                self._emit(job, "execution", f"worktree cleanup failed: {exc}")
+        self.store.save(job)
+
+    def _tools(self, job: JobState) -> ToolLayer:
+        if job.worktree is None:
+            raise FactoryError("no worktree")
+        return ToolLayer(Path(job.worktree.path), self.policy, target_repo=self.target_repo)
+
+    def _run_dir(self, job: JobState) -> Path:
+        path = self.home / "runs" / job.id
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _open_logs(self, job: JobState) -> None:
+        run_dir = self._run_dir(job)
+        self.log = JsonLog(run_dir / "log.jsonl")
+        self.tracer = Tracer(run_dir / "trace.jsonl", self.clock)
+
+    def _write_model(self, job: JobState, name: str, model) -> None:
+        self._run_dir(job).joinpath(name).write_text(model.model_dump_json(indent=2) + "\n")
+
+    def _emit(self, job: JobState, component: str, message: str, **data: str) -> None:
+        event = JobEvent(
+            ts=self.clock.now(),
+            component=component,
+            stage=job.stage.value,
+            message=message,
+            data=data,
+        )
+        job.events.append(event)
+        job.updated_at = event.ts
+        if self.log is not None:
+            self.log.write(event)
+        if self.on_event is not None:
+            self.on_event(event)
+
+
+def _json(payload: dict[str, object]) -> str:
+    import json
+
+    return json.dumps(payload, indent=2) + "\n"

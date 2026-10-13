@@ -1,0 +1,10 @@
+{
+  "id": "decor-unclear",
+  "title": "Make the studio nicer",
+  "summary": "Improve the studio experience.",
+  "acceptance": [],
+  "user_facing": true,
+  "flag_key": null,
+  "source": "file",
+  "hints": []
+}

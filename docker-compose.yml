@@ -1,0 +1,5 @@
+# Optional. Runs the factory test suite. It does not open a pull request.
+services:
+  factory:
+    build: .
+    command: ["python", "-m", "pytest", "-q"]

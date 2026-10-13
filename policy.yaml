@@ -1,0 +1,74 @@
+# Permissions and approval boundaries for factory jobs.
+# Agents never merge, never force-push, and never turn a new user-facing
+# behavior on. A human does that, outside this process.
+
+version: 1
+
+max_retries:
+  verify: 2
+  review: 1
+  govern: 1
+  plan: 2
+
+stage_timeout_seconds:
+  intake: 30
+  context: 60
+  plan: 120
+  govern_plan: 30
+  build: 180
+  verify: 180
+  review: 120
+  govern_ship: 30
+  draft_pr: 60
+
+command_timeout_seconds: 180
+
+allow_commands:
+  - pytest
+  - ruff
+  - mypy
+  - python
+  - python3
+  - git
+
+# Substrings matched against the full command line.
+deny_command_patterns:
+  - "git push"
+  - "git reset"
+  - "git clean"
+  - "git rebase"
+  - "--no-verify"
+  - "sudo"
+  - "rm -rf"
+  - "rm -r"
+
+git_subcommands:
+  - status
+  - diff
+  - add
+  - commit
+  - log
+  - show
+  - rev-parse
+
+deny_paths:
+  - ".env"
+  - ".env.*"
+  - "**/*secret*"
+  - "**/*credential*"
+  - "app/pim/**"
+
+approvals:
+  auto_approve_risk:
+    - low
+  pause_on_ambiguous: true
+  pause_on_risk:
+    - high
+
+flags:
+  required_for_user_facing: true
+  must_default_off: true
+
+pull_request:
+  draft_only: true
+  allow_push: false

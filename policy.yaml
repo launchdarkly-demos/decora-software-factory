@@ -72,7 +72,7 @@ flags:
   must_default_off: true
 
 launchdarkly:
-  project_key: decor-agent-demo-v2
+  project_key: alexis-interior-design-demo-app
   environments:
     - test
     - production

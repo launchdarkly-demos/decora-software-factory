@@ -1,6 +1,6 @@
 # Decora software factory
 
-A feature request goes in. A draft pull request comes out, or the job pauses when a human has to decide.
+A feature request goes in, a draft pull request comes out, or the job pauses when a human has to decide.
 
 The factory builds changes for Decora. The default demo uses a disposable Decora-shaped fixture in `.factory/demo-target`, without accessing any external checkout. It does not furnish rooms. It does not merge. It analyzes the repo, plans the change, implements it in an isolated git worktree, runs a deterministic gate, reviews the diff it actually produced, and writes a draft pull request for a person.
 

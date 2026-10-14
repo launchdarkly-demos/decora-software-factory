@@ -87,7 +87,10 @@ class LaunchDarklyService:
         )
 
     def _token(self) -> tuple[str | None, str]:
-        return resolve_token(Path(__file__).resolve().parents[2], self._environ)
+        if self._environ is not None:
+            token = self._environ.get("LAUNCHDARKLY_API_TOKEN", "").strip()
+            return (token or None, "env" if token else "missing")
+        return resolve_token(Path(__file__).resolve().parents[2])
 
     def _sync(self, job: JobState, key: str, token: str) -> FlagAssurance:
         rules = self.policy.launchdarkly

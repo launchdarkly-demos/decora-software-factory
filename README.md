@@ -84,7 +84,7 @@ stateDiagram-v2
 | 9 | Governance | `factory/governance/`, `policy.yaml` | Permissions and human-approval pauses |
 | 10 | Observability | `factory/observability/` | JSON logs, OpenTelemetry-ready spans, run summary |
 
-Agents return structured data. The orchestrator decides the next stage. The tool layer is what actually writes files and runs commands. A later Temporal workflow can call the same handlers as activities; the handlers do not own the control flow.
+Agents return structured data. The orchestrator decides the next stage. The tool layer is what actually writes files and runs commands. The Temporal workflow now calls the same stage handlers as activities. The local runner remains available for short synchronous demos.
 
 ## Demo
 
@@ -179,7 +179,7 @@ Orchestrator tests cover the verify loop, exhausted retries, human pause and res
 ## What is stubbed
 
 - **Demo target.** A tiny Decora-shaped Python fixture, not the full Decora application. Planner, Builder, and Reviewer all call the OpenAI Agents SDK by default; the Reviewer decides its verdict from the diff and verification evidence. The deterministic verification and governance gates remain mandatory.
-- **Temporal.** The state machine and SQLite job row are the swap point. Temporal is not running.
+- **Temporal deployment.** A local persistent Temporal dev server is supported. Production hosting, TLS/authentication, payload encryption, and multi-host artifact storage are not configured.
 - **GitHub publish.** `gh pr create --draft` is implemented and untested against a real remote. Policy keeps it off. The demo writes the body locally.
 - **Flag deletion.** The factory creates and reuses flags. It does not archive or delete them.
 - **Mock recipes.** `--agents mock` implements one change: `decor-room-mood` on `/api/capabilities`. Any other request pauses for a human.
@@ -212,3 +212,76 @@ make demo-pause DEMO_ARGS="--ld offline"
 ```
 
 The SDK structured-output integration follows the [official Agent definitions guide](https://developers.openai.com/api/docs/guides/agents/define-agents).
+
+## Temporal durable execution
+
+The durable workflow uses the same Planner, Builder, verification, LaunchDarkly,
+Reviewer, governance, and local PR-draft stages. It does not run model calls or
+filesystem operations inside workflow code. The reference was Decora’s
+`durable-workflows` branch (`88658d4`); no `durable-execution` ref was available.
+See [research and sources](docs/temporal-research.md).
+
+Install the Python dependencies with `make install` (for an existing virtualenv,
+run `.venv/bin/python -m pip install -e .`). Install the Temporal CLI separately.
+Start these in two terminals:
+
+```bash
+make temporal-server
+make temporal-worker DEMO_ARGS="--ld live"
+```
+
+The server uses dedicated ports **7235** (API) and **8235** (UI), with persistent
+history at `.factory/temporal-server/history.db`. Open <http://localhost:8235>.
+The worker defaults to real OpenAI agents and the local fixture. It loads keys
+from the environment or this repo’s ignored `.env`; credentials are never
+workflow arguments. To use the real Decora repo, set `TARGET=/absolute/path/to/decor-agent`
+on the worker command. Use a separate task queue and home for a different target;
+never run workers with different targets/configurations on the same queue.
+
+Submit jobs from a third terminal:
+
+```bash
+make temporal-demo
+make temporal-pause
+.venv/bin/python -m factory temporal status job-PRINTED-ID
+.venv/bin/python -m factory temporal wait job-PRINTED-ID
+.venv/bin/python -m factory temporal answer job-PRINTED-ID --pause-id 1 \
+  --answer "flag decor-room-mood on capabilities, default off"
+```
+
+`start` returns immediately. `status` queries the workflow, including its question
+and clarification-round ID. `wait` waits for completion; a human pause intentionally
+keeps the workflow open. `answer` queues a durable signal even while the worker is
+offline; stale or duplicate round IDs are ignored. Restart the worker with the same
+queue, target, home, model, and policy to continue. The normal `factory resume`
+command belongs to local jobs; use `temporal answer` for durable jobs.
+
+Each stage is an activity with three bounded infrastructure attempts. Test/review
+failures remain normal state-machine transitions with the existing repair budgets.
+A per-job lock and atomic completion receipts avoid repeating completed local
+effects when a completion response is lost. On an interrupted build, recovery
+resets only that job’s isolated `factory/job-*` worktree to its recorded pre-attempt
+commit and removes untracked generated files there before retrying. Human edits
+inside that disposable worktree are not preserved during recovery. Model requests
+interrupted before their receipt may be billed again; this is not an exactly-once
+API guarantee. Flag creation/reuse remains idempotent. Temporal publishing currently
+writes local drafts only; remote publishing needs its own retry reconciliation.
+
+Keep both the server database and `.factory` workspace on persistent storage.
+This implementation assumes one host (or the same shared filesystem), and uses
+Unix file locks. Completed jobs clean up their worktrees. Paused jobs retain them;
+exhausted infrastructure failures and externally cancelled/terminated workflows
+retain artifacts for manual inspection. Workflow status is authoritative if an
+infrastructure failure prevented the local SQLite snapshot from updating.
+
+Validation:
+
+```bash
+make test            # includes real-server tests when the Temporal CLI is installed
+make test-temporal   # restart, offline signal delivery, failure handling, history replay
+make lint
+```
+
+The integration suite launches disposable local Temporal servers and uses mock
+agents to avoid API spend. The normal worker uses real agents unless explicitly
+started with `DEMO_ARGS="--agents mock --ld offline"`.

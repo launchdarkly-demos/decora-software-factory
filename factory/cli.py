@@ -9,7 +9,6 @@ from pathlib import Path
 
 from factory.dotenv import ensure_env_key, read_dotenv_key
 from factory.errors import FactoryError
-from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import load_policy
 from factory.harness.base import AgentHarness
 from factory.harness.mock import MockHarness
@@ -30,6 +29,11 @@ def project_root() -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "temporal":
+        from factory.temporal.cli import main as temporal_main
+
+        return temporal_main(argv[1:])
     common = argparse.ArgumentParser(add_help=False, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     common.add_argument("--repo", type=Path, default=project_root() / ".factory" / "demo-target")
     common.add_argument("--home", type=Path, default=None)
@@ -121,7 +125,6 @@ def _dispatch(args: argparse.Namespace) -> int:
     _announce_launchdarkly(args.ld, root)
     if args.cmd == "demo":
         before = _porcelain(repo)
-        WorktreeManager(home / "worktrees").sweep(repo)
         feature = load_feature(root / "samples" / "decor-room-mood.json")
     elif args.cmd == "run":
         before = _porcelain(repo)
@@ -154,7 +157,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 1
     if args.cmd == "demo":
         leftover = subprocess.run(
-            ["git", "-C", str(repo), "branch", "--list", "factory/job-*"],
+            ["git", "-C", str(repo), "branch", "--list", f"factory/{job.id}"],
             check=False,
             capture_output=True,
             text=True,

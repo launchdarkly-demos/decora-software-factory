@@ -19,11 +19,13 @@ class ReviewTools:
 def test_sdk_reviewer_controls_verdict_and_receives_evidence(tmp_path, monkeypatch):
     import agents
 
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
     job = bare_job(tmp_path, worktree=WorktreeInfo(path=str(tmp_path), branch='demo', base_sha='base'))
     job.verify_runs = [failed_verify('historical failure detail'), passed_verify()]
     report = ReviewReport(verdict='changes_requested', findings=[], risks=[], summary='Missing on-case test')
 
-    def run(agent, payload):
+    def run(agent, payload, **kwargs):
         assert agent.name == 'Reviewer'
         assert agent.output_type is ReviewReport
         assert 'actual diff evidence' in payload
@@ -40,9 +42,11 @@ def test_sdk_reviewer_controls_verdict_and_receives_evidence(tmp_path, monkeypat
 def test_sdk_reviewer_failure_never_approves_or_leaks_error(tmp_path, monkeypatch):
     import agents
 
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
     job = bare_job(tmp_path, worktree=WorktreeInfo(path=str(tmp_path), branch='demo', base_sha='base'))
 
-    def run(*args):
+    def run(*args, **kwargs):
         raise RuntimeError('sensitive provider response')
 
     monkeypatch.setattr(agents.Runner, 'run_sync', run)

@@ -105,6 +105,13 @@ class Factory:
             raise FactoryError(f"{job_id} is in {job.stage.value}, not waiting for a human")
         if not answer.strip():
             raise FactoryError("an answer is required to resume")
+        self.accept_answer(job, answer)
+        self._drive(job)
+        return job
+
+    def accept_answer(self, job: JobState, answer: str) -> None:
+        if job.stage != Stage.AWAIT_HUMAN or not answer.strip():
+            raise FactoryError("a paused job and a nonempty answer are required")
         self._open_logs(job)
         job.human_answers.append(answer.strip())
         dest = job.resume_stage or Stage.PLAN
@@ -116,8 +123,6 @@ class Factory:
         job.updated_at = self.clock.now()
         self._emit(job, "governance", f"human answered; resuming at {dest.value}")
         self.store.save(job)
-        self._drive(job)
-        return job
 
     def status(self, job_id: str) -> JobState:
         return self.store.load(job_id)
@@ -125,21 +130,29 @@ class Factory:
     def _drive(self, job: JobState) -> None:
         try:
             while job.stage not in (Stage.DONE, Stage.FAILED, Stage.AWAIT_HUMAN):
-                current = job.stage
-                handler = self._handlers[current]
-                if self.tracer is None:
-                    transition = self._bounded(job, handler)
-                else:
-                    with self.tracer.span(
-                        f"stage.{current.value}",
-                        COMPONENTS[current],
-                        job_id=job.id,
-                    ):
-                        transition = self._bounded(job, handler)
-                self._apply(job, current, transition)
-                self.store.save(job)
+                self.advance(job)
         finally:
             self._finish(job)
+
+    def advance(self, job: JobState) -> None:
+        """Execute exactly one stage; usable by the local loop or a Temporal activity."""
+        self._open_logs(job)
+        current = job.stage
+        handler = self._handlers[current]
+        assert self.tracer is not None
+        with self.tracer.span(f"stage.{current.value}", COMPONENTS[current], job_id=job.id):
+            transition = self._bounded(job, handler)
+        self._apply(job, current, transition)
+        self.store.save(job)
+
+    def finish(self, job: JobState) -> None:
+        self._open_logs(job)
+        self._finish(job)
+
+    def prepare_build(self, job: JobState) -> None:
+        if job.worktree is None or job.worktree.removed:
+            job.worktree = self.execution.create(self.target_repo, job.id)
+            self.store.save(job)
 
     def _bounded(self, job: JobState, handler: Callable[[JobState], Transition]) -> Transition:
         start = self.clock.now()

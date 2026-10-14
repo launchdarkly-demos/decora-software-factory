@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -30,7 +31,7 @@ class OpenAIAgentsHarness:
             ) from exc
 
     def plan(self, job: JobState, context: RepoContext) -> ImplementationPlan:
-        from agents import Agent, Runner
+        from agents import Agent
 
         payload = json.dumps(
             {
@@ -46,7 +47,7 @@ class OpenAIAgentsHarness:
             model=self.model,
         )
         try:
-            result = Runner.run_sync(agent, payload)
+            result = _run_agent(agent, payload)
         except Exception as exc:
             raise FactoryError(f"Planner call failed: {exc.__class__.__name__}") from None
         charge_provider(job, result, payload, "")
@@ -56,7 +57,7 @@ class OpenAIAgentsHarness:
         return ImplementationPlan.model_validate(output)
 
     def build(self, job: JobState, tools: ToolLayer):
-        from agents import Agent, Runner
+        from agents import Agent
 
         latest = job.latest_verify()
         payload = json.dumps(
@@ -78,7 +79,7 @@ class OpenAIAgentsHarness:
             model_settings=ModelSettings(max_tokens=6000),
         )
         try:
-            result = Runner.run_sync(agent, payload)
+            result = _run_agent(agent, payload)
         except Exception as exc:
             detail = _builder_failure(exc)
             raise FactoryError(detail) from None
@@ -89,7 +90,7 @@ class OpenAIAgentsHarness:
         return apply_proposal(job, tools, proposal)
 
     def review(self, job: JobState, tools: ToolLayer):
-        from agents import Agent, Runner
+        from agents import Agent
         if job.worktree is None:
             raise FactoryError("review requires a worktree")
         latest = job.latest_verify()
@@ -109,7 +110,7 @@ class OpenAIAgentsHarness:
             model=self.model,
         )
         try:
-            result = Runner.run_sync(agent, payload)
+            result = _run_agent(agent, payload)
         except Exception as exc:
             raise FactoryError(f"Reviewer call failed: {exc.__class__.__name__}") from None
         charge_provider(job, result, payload, "")
@@ -195,3 +196,22 @@ _WINDOWS = {
     "app/flags.py": ("BOARD_INTAKE_FLAG", "def get_flag"),
     "server.py": ("def capabilities", "from app.flags import", "sample_board"),
 }
+
+
+def _run_agent(agent, payload: str):
+    """Keep HTTP connection pools scoped to the activity's event loop."""
+    from agents import RunConfig, Runner
+    from agents.models.openai_provider import OpenAIProvider
+    from openai import AsyncOpenAI
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    client = AsyncOpenAI()
+    try:
+        return Runner.run_sync(
+            agent, payload, run_config=RunConfig(model_provider=OpenAIProvider(openai_client=client))
+        )
+    finally:
+        loop.run_until_complete(client.close())
+        loop.close()
+        asyncio.set_event_loop(None)

@@ -116,6 +116,7 @@ def render_pr(job: JobState, diff: str) -> str:
         "",
         "## Summary",
         "",
+        *([f"Related issue: {job.feature.issue_url}", ""] if job.feature.issue_url else []),
         job.feature.summary,
         "",
         "## Flag",

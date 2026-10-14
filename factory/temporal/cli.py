@@ -49,6 +49,12 @@ def parser() -> argparse.ArgumentParser:
     start = sub.add_parser("start", parents=[common], help="submit a feature; returns immediately")
     start.add_argument("spec", type=Path)
     start.add_argument("--id", default=None)
+    issues = sub.add_parser("watch-issues", parents=[common], help="submit maintainer-labeled GitHub issues")
+    issues.add_argument("--slug", required=True, help="GitHub owner/name matching the worker target")
+    issues.add_argument("--label", default="factory:ready")
+    issues.add_argument("--home", type=Path, default=ROOT / ".factory" / "github")
+    issues.add_argument("--interval", type=float, default=30)
+    issues.add_argument("--once", action="store_true")
     for name in ("status", "wait", "answer"):
         command = sub.add_parser(name, parents=[common])
         command.add_argument("job_id")
@@ -71,6 +77,11 @@ def main(argv: list[str]) -> int:
 
 async def dispatch(args: argparse.Namespace) -> int:
     client = await Client.connect(args.address, namespace=args.namespace)
+    if args.command == "watch-issues":
+        from factory.github.issues import watch_issues
+
+        await watch_issues(client, args)
+        return 0
     if args.command == "worker":
         await run_worker(client, args)
         return 0

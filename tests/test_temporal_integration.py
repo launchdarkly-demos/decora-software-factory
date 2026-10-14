@@ -96,3 +96,39 @@ async def _failure():
             assert result['stage'] == 'failed'
             assert 'retries exhausted' in result['error']
             assert attempts == 3
+
+
+def test_issue_bridge_submits_and_reports_real_workflow(tmp_path):
+    asyncio.run(_issue_bridge(tmp_path))
+
+
+async def _issue_bridge(tmp_path):
+    from factory.gitcmd import git
+    from factory.github.issues import IssueBridge
+    from tests.test_github_issues import FakeGitHub
+
+    repo = init_repo(tmp_path / 'repo')
+    git(repo, 'remote', 'add', 'origin', 'git@github.com:owner/repo.git')
+    factory = make_factory(tmp_path, repo)
+    activities = StageActivities(lambda: make_factory(tmp_path, repo), factory.home)
+    environment = await WorkflowEnvironment.start_local(dev_server_existing_path=shutil.which('temporal'))
+    async with environment:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            async with Worker(environment.client, task_queue='issues-test', workflows=[FactoryWorkflow],
+                              activities=[activities.execute], activity_executor=executor):
+                gh = FakeGitHub()
+                bridge = IssueBridge(environment.client, gh, tmp_path / 'bridge', 'issues-test', 'factory:ready')
+                await bridge.tick()
+                handle = environment.client.get_workflow_handle('job-gh-42')
+                state = await wait_for_pause(handle)
+                await bridge.tick()
+                assert 'await_human' in gh.posts[-1][2]
+                await handle.signal(FactoryWorkflow.answer, args=[state['pause_id'],
+                                    'flag decor-room-mood on capabilities, default off'])
+                result = await asyncio.wait_for(handle.result(), 60)
+                assert result['stage'] == 'done', result.get('error')
+                # The bridge continues tracking even if the trigger label is removed.
+                gh.items = []
+                await bridge.tick()
+                assert 'local PR draft' in gh.posts[-1][2]
+                assert bridge.state['jobs']['job-gh-42']['terminal']

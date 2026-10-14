@@ -324,3 +324,15 @@ code bundles do not contain virtualenvs or secrets. Verification currently uses
 the target repo's Python environment when available, so another host must provide
 an equivalent environment. Containerized execution and shared object storage are
 future deployment steps, not requirements for this local run.
+
+## Submit GitHub issues
+
+Use the **Factory task** issue template, then have a maintainer add `factory:ready`.
+The `factory temporal watch-issues` bridge submits one durable job per issue and
+updates a status comment with clarification instructions and the draft PR link.
+It uses the existing Temporal worker; it does not require a public webhook or a
+GitHub Actions runner. See [setup, commands, behavior, and remaining work](docs/github-issues.md).
+
+The issue bridge does not broaden the Planner's scope: arbitrary UI changes,
+refactors, and bug fixes still need the planning/context/verification improvements
+listed in that guide.

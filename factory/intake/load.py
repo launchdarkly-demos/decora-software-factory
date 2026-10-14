@@ -9,6 +9,17 @@ from factory.errors import FactoryError
 from factory.models import FeatureRequest
 
 
+def check_issue_target(repo: Path, issue_url: str | None) -> None:
+    from factory.gitcmd import git
+
+    match = re.fullmatch(r"https://github.com/([^/]+/[^/]+)/issues/[0-9]+", issue_url or "")
+    origin = git(repo, "remote", "get-url", "origin")
+    remote = origin.stdout.strip()
+    slug = remote.removeprefix("git@github.com:").removeprefix("https://github.com/").removesuffix(".git")
+    if not match or origin.returncode or match[1].lower() != slug.lower():
+        raise FactoryError("GitHub issue repository does not match the worker target origin")
+
+
 def load_feature(path: Path) -> FeatureRequest:
     data = json.loads(path.read_text())
     return FeatureRequest.model_validate(data)
@@ -32,6 +43,7 @@ def parse_issue_body(title: str, body: str, *, url: str | None = None) -> Featur
         flag_default=flag_default,
         source="github_issue",
         issue_url=url,
+        hints=_bullets(sections.get("hints", "")),
     )
 
 

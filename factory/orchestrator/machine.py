@@ -194,6 +194,10 @@ class Factory:
 
     def _intake(self, job: JobState) -> Transition:
         feature = job.feature
+        if feature.source == "github_issue":
+            from factory.intake.load import check_issue_target
+
+            check_issue_target(self.target_repo, feature.issue_url)
         if not feature.id.strip() or not feature.title.strip() or not feature.summary.strip():
             return Transition(
                 stage=Stage.FAILED,

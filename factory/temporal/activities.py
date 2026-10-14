@@ -12,6 +12,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from factory.errors import FactoryError
+from factory.execution.portable import PortableWorkspace
 from factory.gitcmd import git
 from factory.models import JobState, Stage
 from factory.orchestrator.machine import Factory
@@ -52,6 +53,9 @@ class StageActivities:
                     job = JobState.model_validate(previous["job"])
                     if operation == "step" and job.stage == Stage.BUILD:
                         self._restore_build(factory, job, previous["head"])
+                if (isinstance(factory.execution, PortableWorkspace) and job.worktree is not None
+                        and not job.worktree.removed and operation != "finish"):
+                    factory.execution.ensure(factory.target_repo, job.worktree)
                 head = None
                 if operation == "step" and job.stage == Stage.BUILD:
                     factory.prepare_build(job)
@@ -67,6 +71,10 @@ class StageActivities:
                     factory.accept_answer(job, str(request["answer"]))
                 else:
                     factory.finish(job)
+                if (isinstance(factory.execution, PortableWorkspace) and job.worktree is not None
+                        and not job.worktree.removed):
+                    factory.execution.checkpoint(job.worktree)
+                    factory.store.save(job)
                 result = job.model_dump(mode="json")
                 _atomic_json(receipt, {"status": "done", "job": result})
                 return result
@@ -77,6 +85,9 @@ class StageActivities:
     def _restore_build(self, factory: Factory, job: JobState, head: str) -> None:
         if job.worktree is None:
             raise FactoryError("Interrupted build has no worktree checkpoint")
+        if isinstance(factory.execution, PortableWorkspace):
+            factory.execution.recover(factory.target_repo, job.worktree, head)
+            return
         path = Path(job.worktree.path).resolve()
         expected = (self.home / "worktrees" / job.id).resolve()
         if path != expected or path == factory.target_repo or not (path / ".git").is_file():

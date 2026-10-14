@@ -132,6 +132,9 @@ class WorktreeInfo(BaseModel):
     branch: str
     base_sha: str
     removed: bool = False
+    snapshot: str | None = None
+    source_url: str | None = None
+    base_branch: str = "main"
 
 
 class FlagAssurance(BaseModel):
@@ -178,6 +181,7 @@ class JobState(BaseModel):
     id: str
     stage: Stage
     feature: FeatureRequest
+    source_sha: str | None = None
     context: RepoContext | None = None
     plan: ImplementationPlan | None = None
     builds: list[BuildResult] = Field(default_factory=list)

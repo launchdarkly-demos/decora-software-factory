@@ -14,6 +14,7 @@ from temporalio.worker import Worker
 
 from factory.dotenv import ensure_env_key
 from factory.errors import FactoryError
+from factory.execution.portable import PortableWorkspace
 from factory.governance.policy import load_policy
 from factory.harness.mock import MockHarness
 from factory.harness.openai_agents import OpenAIAgentsHarness
@@ -41,6 +42,10 @@ def parser() -> argparse.ArgumentParser:
     worker.add_argument("--agents", choices=["openai", "mock"], default="openai")
     worker.add_argument("--ld", choices=["auto", "live", "offline"], default="auto")
     worker.add_argument("--keep-worktree", action="store_true")
+    worker.add_argument("--push", action="store_true", help="publish draft PRs if policy allows")
+    worker.add_argument("--workspace-root", type=Path, default=None)
+    worker.add_argument("--base-ref", default="HEAD")
+    worker.add_argument("--base-branch", default="main")
     start = sub.add_parser("start", parents=[common], help="submit a feature; returns immediately")
     start.add_argument("spec", type=Path)
     start.add_argument("--id", default=None)
@@ -107,14 +112,16 @@ async def run_worker(client: Client, args: argparse.Namespace) -> None:
         ensure_env_key(ROOT, "OPENAI_API_KEY")
     policy = load_policy(args.policy)
     repo, home = args.repo.resolve(), args.home.resolve()
-    if not (repo / ".git").exists():
-        raise FactoryError("worker target must be an initialized Git repository")
+    if not (repo / ".git").exists() and not any((home / "artifacts").glob("*.json")):
+        raise FactoryError("worker needs a source repository or existing recovery artifacts")
 
     def create_factory() -> Factory:
         return Factory(
             target_repo=repo, home=home, policy=policy,
             harness=OpenAIAgentsHarness() if args.agents == "openai" else MockHarness(),
-            ld_mode=args.ld, keep_worktree=args.keep_worktree,
+            ld_mode=args.ld, keep_worktree=args.keep_worktree, push=args.push,
+            execution=PortableWorkspace(args.workspace_root or home / "workspaces", home / "artifacts",
+                                        base_ref=args.base_ref, base_branch=args.base_branch),
         )
 
     activities = StageActivities(create_factory, home)

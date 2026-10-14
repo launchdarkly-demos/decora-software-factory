@@ -113,6 +113,8 @@ class ToolLayer:
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTHONPATH", None)
         env["DECORA_PERSIST"] = "0"
+        env["PYTHON_DOTENV_DISABLED"] = "1"
+        env.update(self.policy.command_environment)
         for key in ("LD_SDK_KEY", "LAUNCHDARKLY_SDK_KEY", "OPENAI_API_KEY", "LAUNCHDARKLY_API_TOKEN"):
             env.pop(key, None)
         return env

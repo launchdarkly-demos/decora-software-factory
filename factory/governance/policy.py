@@ -37,6 +37,8 @@ class Policy(BaseModel):
         default_factory=lambda: {"verify": 2, "review": 1, "govern": 1, "plan": 2, "build": 3}
     )
     stage_timeout_seconds: dict[str, float] = Field(default_factory=dict)
+    regression_tests: list[str] = Field(default_factory=list)
+    command_environment: dict[str, str] = Field(default_factory=dict)
     command_timeout_seconds: float = 180
     allow_commands: list[str] = Field(
         default_factory=lambda: ["pytest", "ruff", "mypy", "python", "python3", "git"]

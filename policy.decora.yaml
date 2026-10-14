@@ -1,0 +1,75 @@
+# Explicit opt-in policy for real Decora draft PRs. Publishing still requires --push.
+version: 1
+max_retries:
+  verify: 2
+  review: 1
+  govern: 1
+  plan: 2
+  build: 3
+stage_timeout_seconds:
+  intake: 30
+  context: 60
+  plan: 120
+  govern_plan: 30
+  build: 180
+  verify: 180
+  ensure_flag: 90
+  review: 120
+  govern_ship: 30
+  draft_pr: 60
+command_timeout_seconds: 180
+command_environment:
+  # Catalog-only regression needs settings to parse; no model credential is needed.
+  ANTHROPIC_API_KEY: factory-test-not-a-real-key
+allow_commands:
+- pytest
+- ruff
+- mypy
+- python
+- python3
+- git
+deny_command_patterns:
+- git push
+- git reset
+- git clean
+- git rebase
+- --no-verify
+- sudo
+- rm -rf
+- rm -r
+git_subcommands:
+- status
+- diff
+- add
+- commit
+- log
+- show
+- rev-parse
+deny_paths:
+- .env
+- .env.*
+- '**/*secret*'
+- '**/*credential*'
+- app/pim/**
+approvals:
+  auto_approve_risk:
+  - low
+  pause_on_ambiguous: true
+  pause_on_risk:
+  - high
+flags:
+  required_for_user_facing: true
+  must_default_off: true
+launchdarkly:
+  project_key: decor-agent-demo-v2
+  environments:
+  - test
+  - production
+  production_environment: production
+pull_request:
+  draft_only: true
+  allow_push: true
+regression_tests:
+- test_api_project.py
+- test_board.py
+- test_flinch_gate.py

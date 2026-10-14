@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -39,38 +40,54 @@ class Publisher:
             raise GovernanceError("factory only opens draft pull requests")
         if job.worktree is None:
             raise GovernanceError("no worktree to push")
-        pushed = self.runner(
-            ["git", "-C", job.worktree.path, "push", "-u", "origin", job.worktree.branch],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if pushed.returncode != 0:
-            raise GovernanceError((pushed.stderr or pushed.stdout or "git push failed").strip())
-        created = self.runner(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--draft",
-                "--title",
-                title,
-                "--body-file",
-                str(body_path),
-                "--head",
-                job.worktree.branch,
-            ],
-            cwd=job.worktree.path,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if created.returncode != 0:
-            raise GovernanceError((created.stderr or created.stdout or "gh pr create failed").strip())
-        draft.url = (created.stdout or "").strip() or None
+        # Reconcile by stable head branch before creating anything. Activities may
+        # be retried after GitHub succeeded but its response was lost.
+        repo = self._run(job, ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).strip()
+        if not repo or len(repo.split("/")) != 2:
+            raise GovernanceError("cannot identify publishing repository")
+        existing = self._existing(job, repo)
+        self._run(job, ["git", "push", "-u", "origin", f"HEAD:refs/heads/{job.worktree.branch}"])
+        existing = existing or self._existing(job, repo)
+        if existing:
+            draft.url = existing
+        else:
+            draft.url = self._run(job, [
+                "gh", "pr", "create", "--repo", repo, "--draft", "--title", title,
+                "--body-file", str(body_path), "--head", job.worktree.branch,
+                "--base", job.worktree.base_branch,
+            ]).strip()
         draft.dry_run = False
         (run_dir / "pr.json").write_text(draft.model_dump_json(indent=2) + "\n")
         return draft
+
+
+    def _run(self, job: JobState, argv: list[str]) -> str:
+        assert job.worktree is not None
+        result = self.runner(argv, cwd=job.worktree.path, check=False, capture_output=True, text=True)
+        if result.returncode:
+            # A transport failure can occur after a successful side effect. Let
+            # Temporal retry and reconcile; never include provider output/secrets.
+            raise PublicationError(f"Publication command failed: {argv[0]}")
+        return result.stdout or ""
+
+    def _existing(self, job: JobState, repo: str) -> str | None:
+        assert job.worktree is not None
+        items = json.loads(self._run(job, [
+            "gh", "pr", "list", "--repo", repo, "--head", job.worktree.branch,
+            "--state", "all", "--json", "url,isDraft,state,baseRefName",
+        ]))
+        if not items:
+            return None
+        if len(items) != 1:
+            raise GovernanceError("multiple PRs exist for this factory branch")
+        item = items[0]
+        if not item["isDraft"] or item["state"] != "OPEN" or item["baseRefName"] != job.worktree.base_branch:
+            raise GovernanceError("existing factory PR is not an open draft against the expected base")
+        return str(item["url"])
+
+
+class PublicationError(Exception):
+    """Retryable publication transport failure; reconcile remote state on retry."""
 
 
 def _flag_lines(job: JobState) -> list[str]:
@@ -95,7 +112,7 @@ def render_pr(job: JobState, diff: str) -> str:
         "",
         "Draft pull request. Do not merge.",
         "",
-        "This body was produced by the Decora software factory. The branch was not pushed.",
+        "This draft was produced by the Decora software factory. A human must review and merge it.",
         "",
         "## Summary",
         "",

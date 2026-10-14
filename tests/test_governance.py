@@ -41,6 +41,45 @@ def test_flag_audit_requires_the_key_and_a_default_of_off() -> None:
     assert audit_flag("no flag here", None, must_default_off=True)
 
 
+def test_flag_audit_ignores_removed_defaults_and_test_comments() -> None:
+    diff = '''diff --git a/server.py b/server.py
+--- a/server.py
++++ b/server.py
+@@ -1,2 +1,2 @@
+-FLAG_DEFAULT = True
++FLAG_DEFAULT = False
++FLAG_KEY = "decor-room-mood"
+diff --git a/test_mood.py b/test_mood.py
++++ b/test_mood.py
++# Check that FLAG_DEFAULT = True fails.
++FLAG_DEFAULT = True
+'''
+    assert audit_flag(diff, "decor-room-mood", must_default_off=True) == []
+    enabled = diff.replace("+FLAG_DEFAULT = False", "+FLAG_DEFAULT = True")
+    assert audit_flag(enabled, "decor-room-mood", must_default_off=True)
+
+
+def test_test_fixtures_cannot_satisfy_the_production_flag_audit() -> None:
+    diff = '''diff --git a/test_mood.py b/test_mood.py
++++ b/test_mood.py
++FLAG_DEFAULT = False
++FLAG_KEY = "decor-room-mood"
+'''
+    assert len(audit_flag(diff, "decor-room-mood", must_default_off=True)) == 2
+
+
+def test_command_environment_does_not_restore_factory_secrets(tmp_path: Path) -> None:
+    rules = policy()
+    rules.command_environment = {
+        "ANTHROPIC_API_KEY": "dummy-test-value",
+        "OPENAI_API_KEY": "should-be-stripped",
+    }
+    env = ToolLayer(tmp_path, rules)._env()
+    assert env["ANTHROPIC_API_KEY"] == "dummy-test-value"
+    assert "OPENAI_API_KEY" not in env
+    assert env["PYTHON_DOTENV_DISABLED"] == "1"
+
+
 def test_builder_repair_reads_the_verifier_text() -> None:
     from factory.agents.recipes import ship_flag_on
 

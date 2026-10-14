@@ -1,0 +1,26 @@
+{
+  "id": "decor-room-mood",
+  "title": "Show a room mood line on capabilities",
+  "summary": "Studio should read a short mood line for the active room from GET /api/capabilities. The line is user-facing and must stay dark until the LaunchDarkly flag decor-room-mood is turned on. The code default is off.",
+  "acceptance": [
+    "GET /api/capabilities omits room_mood when decor-room-mood is off",
+    "GET /api/capabilities includes room_mood calm linen when the flag is on",
+    "The flag key decor-room-mood defaults off in code",
+    "Existing board_intake and sample_board capability fields remain unchanged"
+  ],
+  "user_facing": true,
+  "flag_key": "decor-room-mood",
+  "flag_default": false,
+  "source": "file",
+  "hints": [
+    "server.py",
+    "app/flags.py",
+    "capabilities",
+    "test_api_project.py",
+    "Use real FastAPI TestClient HTTP requests; patch only flag evaluation, never replace the route or app.",
+    "Preserve board_intake and sample_board response fields.",
+    "Reuse server.py's module-level get_flag import; do not shadow it with a function-local import, so tests can patch server.get_flag.",
+    "Add feature tests in a NEW test_room_mood_api.py. Do not modify test_api_project.py or existing regression tests."
+  ],
+  "demo_fail_first_build": false
+}

@@ -94,9 +94,6 @@ def _dispatch(args: argparse.Namespace) -> int:
     policy_path = args.policy or (root / "policy.yaml")
     policy = load_policy(policy_path)
     repo = args.repo.resolve()
-    if args.push and repo == DECORA_REPO.resolve():
-        print("Refusing to push or open a pull request on the Decora repo.", file=sys.stderr)
-        return 1
     if args.push and not policy.pull_request.allow_push:
         print("policy.yaml pull_request.allow_push is false. This factory will not push.", file=sys.stderr)
         return 1

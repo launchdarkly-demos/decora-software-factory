@@ -104,7 +104,7 @@ That command:
 6. The reviewer reads `git diff`, the verification log, and the acceptance lines. It does not trust the builder's summary.
 7. Writes a draft pull request body under `.factory/runs/<job-id>/` and deletes the worktree and the `factory/job-*` branch. The body includes the LaunchDarkly URL when the live check ran.
 
-Nothing is pushed. `policy.yaml` has `pull_request.allow_push: false`. The CLI also refuses `--push` when the target is the Decora checkout.
+Nothing is pushed. `policy.yaml` has `pull_request.allow_push: false`. Publishing requires both an explicit `--push` and a policy that permits it. `policy.decora.yaml` opts into draft PRs for the real target.
 
 Other entry points:
 
@@ -180,7 +180,7 @@ Orchestrator tests cover the verify loop, exhausted retries, human pause and res
 
 - **Demo target.** A tiny Decora-shaped Python fixture, not the full Decora application. Planner, Builder, and Reviewer all call the OpenAI Agents SDK by default; the Reviewer decides its verdict from the diff and verification evidence. The deterministic verification and governance gates remain mandatory.
 - **Temporal deployment.** A local persistent Temporal dev server is supported. Production hosting, TLS/authentication, payload encryption, and multi-host artifact storage are not configured.
-- **GitHub publish.** `gh pr create --draft` is implemented and untested against a real remote. Policy keeps it off. The demo writes the body locally.
+- **GitHub publish.** Default demos write local drafts. The real Decora profile opts into draft PR publishing with retry reconciliation by job branch; the factory never merges.
 - **Flag deletion.** The factory creates and reuses flags. It does not archive or delete them.
 - **Mock recipes.** `--agents mock` implements one change: `decor-room-mood` on `/api/capabilities`. Any other request pauses for a human.
 - **Docker.** `docker compose up --build` runs the factory test suite. It does not run the Decora demo.
@@ -259,17 +259,22 @@ command belongs to local jobs; use `temporal answer` for durable jobs.
 Each stage is an activity with three bounded infrastructure attempts. Test/review
 failures remain normal state-machine transitions with the existing repair budgets.
 A per-job lock and atomic completion receipts avoid repeating completed local
-effects when a completion response is lost. On an interrupted build, recovery
-resets only that job’s isolated `factory/job-*` worktree to its recorded pre-attempt
-commit and removes untracked generated files there before retrying. Human edits
+effects when a completion response is lost. Durable workers use independent
+`codex/job-*` clones backed by checksummed Git bundles. On an interrupted build,
+recovery reconstructs a missing clone if needed, resets it to the recorded
+pre-attempt commit, and removes untracked generated files there before retrying. Human edits
 inside that disposable worktree are not preserved during recovery. Model requests
 interrupted before their receipt may be billed again; this is not an exactly-once
-API guarantee. Flag creation/reuse remains idempotent. Temporal publishing currently
-writes local drafts only; remote publishing needs its own retry reconciliation.
+API guarantee. Flag creation/reuse remains idempotent. With `--push` and an opt-in policy, publishing reconciles an existing open draft
+by its stable job branch before attempting creation, including after a lost
+GitHub response. Closed, merged, or non-draft PRs are never repurposed.
 
 Keep both the server database and `.factory` workspace on persistent storage.
-This implementation assumes one host (or the same shared filesystem), and uses
-Unix file locks. Completed jobs clean up their worktrees. Paused jobs retain them;
+Receipts, snapshots, logs, and SQLite remain in the durable `--home` directory.
+A replacement worker can use a different `--workspace-root`; all committed code
+is rebuilt from bundles without the old clone or source checkout. Copy or mount
+the durable home when moving hosts. This is tested cold recovery, not a
+distributed-storage/locking deployment; coordination still uses Unix file locks. Completed jobs clean up their worktrees. Paused jobs retain them;
 exhausted infrastructure failures and externally cancelled/terminated workflows
 retain artifacts for manual inspection. Workflow status is authoritative if an
 infrastructure failure prevented the local SQLite snapshot from updating.
@@ -285,3 +290,37 @@ make lint
 The integration suite launches disposable local Temporal servers and uses mock
 agents to avoid API spend. The normal worker uses real agents unless explicitly
 started with `DEMO_ARGS="--agents mock --ld offline"`.
+
+## Real Decora workflow
+
+The real target profile adds existing API, board, and approval-gate regression tests.
+It supplies a dummy Anthropic key for settings validation in the catalog-only
+regression; tests do not receive the factory's OpenAI or LaunchDarkly credentials.
+It leaves the primary checkout and its uncommitted work alone. Code starts from a
+pinned commit in an independent clone; initial context is read from that clone.
+Bundle snapshots preserve the exact base and generated commits, including binary
+files, and exclude uncommitted primary-checkout files. Keep `.factory` private:
+bundles and workflow histories contain repository code and model output.
+
+```bash
+.venv/bin/python -m factory temporal worker \
+  --repo /absolute/path/to/decor-agent \
+  --home "$PWD/.factory/decora" --task-queue decora-factory \
+  --policy policy.decora.yaml --base-ref <full-main-commit-sha> \
+  --base-branch main --ld live --push
+.venv/bin/python -m factory temporal start samples/decor-room-mood-real.json \
+  --task-queue decora-factory
+```
+
+`--push` publishes only the isolated job branch and an unmerged draft PR. Agent
+commands still cannot push. The publisher checks the head branch for an existing
+PR and stops if it is closed, merged, non-draft, or targets a different base.
+GitHub authentication must be available to the worker. After any interrupted
+publication, resume the same workflow/job so reconciliation uses the same branch.
+
+For worker relocation, copy the durable home, then use `--workspace-root` to choose
+fresh local clone storage. Dependency environments are provisioned separately:
+code bundles do not contain virtualenvs or secrets. Verification currently uses
+the target repo's Python environment when available, so another host must provide
+an equivalent environment. Containerized execution and shared object storage are
+future deployment steps, not requirements for this local run.

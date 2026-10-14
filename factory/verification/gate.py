@@ -40,7 +40,7 @@ class VerificationGate:
             if item.output:
                 lines.append(item.output[-2000:])
         if passed:
-            lines.append("pytest, ruff, and the type check passed; the flag defaults off")
+            lines.append("All executed verification commands passed; the flag audit passed.")
         classification: FailureClass = "none"
         if not passed:
             if problems:
@@ -58,7 +58,7 @@ class VerificationGate:
 
     def _pytest(self, job: JobState, tools: ToolLayer) -> list[CommandReport]:
         assert job.plan is not None
-        targets = list(job.plan.test_targets)
+        targets = list(dict.fromkeys([*job.plan.test_targets, *tools.policy.regression_tests]))
         if (tools.worktree / "test_room_mood_api.py").exists() and "test_room_mood_api.py" not in targets:
             targets.append("test_room_mood_api.py")
         if not targets:

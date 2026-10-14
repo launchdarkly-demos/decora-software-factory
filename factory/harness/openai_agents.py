@@ -152,8 +152,9 @@ def _focused_excerpt(rel: str, text: str) -> str:
         window = _window(text, needles)
         if window:
             return window
-    if len(text) > 2500:
-        return text[:2500] + "\n# ... truncated\n"
+    # Keep ordinary generated test files whole so repair anchors remain visible.
+    if len(text) > 12000:
+        return text[:12000] + "\n# ... truncated\n"
     return text
 
 

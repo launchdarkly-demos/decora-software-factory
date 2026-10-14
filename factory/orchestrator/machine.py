@@ -9,6 +9,7 @@ from pathlib import Path
 from factory.clock import Clock, SystemClock
 from factory.context.repo import analyze_repo
 from factory.errors import FactoryError, GovernanceError, RecipeError
+from factory.execution.portable import PortableWorkspace
 from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import Policy, review_plan, review_ship
 from factory.harness.base import AgentHarness
@@ -151,7 +152,10 @@ class Factory:
 
     def prepare_build(self, job: JobState) -> None:
         if job.worktree is None or job.worktree.removed:
-            job.worktree = self.execution.create(self.target_repo, job.id)
+            if isinstance(self.execution, PortableWorkspace):
+                job.worktree = self.execution.create(self.target_repo, job.id, job.source_sha)
+            else:
+                job.worktree = self.execution.create(self.target_repo, job.id)
             self.store.save(job)
 
     def _bounded(self, job: JobState, handler: Callable[[JobState], Transition]) -> Transition:
@@ -199,7 +203,13 @@ class Factory:
         return Transition(stage=Stage.CONTEXT, detail=f"accepted {feature.id} from {feature.source}")
 
     def _context(self, job: JobState) -> Transition:
-        context = analyze_repo(self.target_repo, job.feature)
+        context_root = self.target_repo
+        if isinstance(self.execution, PortableWorkspace):
+            job.source_sha = job.source_sha or self.execution.pin(self.target_repo)
+            self.prepare_build(job)
+            assert job.worktree is not None
+            context_root = Path(job.worktree.path)
+        context = analyze_repo(context_root, job.feature)
         job.context = context
         self._write_model(job, "context.json", context)
         return Transition(
@@ -237,7 +247,9 @@ class Factory:
     def _build(self, job: JobState) -> Transition:
         if job.worktree is None or job.worktree.removed:
             try:
-                info = self.execution.create(self.target_repo, job.id)
+                self.prepare_build(job)
+                assert job.worktree is not None
+                info = job.worktree
             except FactoryError as exc:
                 return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
             job.worktree = info

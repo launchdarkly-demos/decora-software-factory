@@ -46,14 +46,20 @@ def prerequisites(policy: Policy, plan: ImplementationPlan, paths: list[str]) ->
 
 def task_problems(plan: ImplementationPlan) -> list[str]:
     seen: set[str] = set()
+    errors: list[str] = []
     for task in plan.tasks:
-        if not task.id or task.id in seen or not set(task.depends_on).issubset(seen):
-            return ['Plan tasks must have unique IDs and depend only on earlier tasks.']
-        if not set(task.files).issubset(plan.files):
-            return ['Task files must be included in the approved plan file list.']
+        if not task.id or task.id in seen:
+            errors.append(f"Task ID must be nonempty and unique: {task.id!r}.")
+        missing_dependencies = set(task.depends_on) - seen
+        if missing_dependencies:
+            errors.append(f"Task {task.id} depends on tasks not listed earlier: "
+                          + ", ".join(sorted(missing_dependencies)))
+        missing_files = set(task.files) - set(plan.files)
+        if missing_files:
+            errors.append(f"Task {task.id} files missing from plan.files: " + ", ".join(sorted(missing_files)))
         if not task.acceptance:
-            return ['Each plan task needs acceptance checks.']
+            errors.append(f"Task {task.id} needs acceptance checks.")
         seen.add(task.id)
     if plan.recipe == 'general' and not plan.tasks:
-        return ['A general implementation plan must break the work into concrete tasks.']
-    return []
+        errors.append('A general implementation plan must break the work into concrete tasks.')
+    return errors

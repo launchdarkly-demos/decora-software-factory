@@ -113,6 +113,8 @@ def test_sdk_planner_has_read_only_repository_tools(tmp_path, monkeypatch):
     def run(agent, payload, **kwargs):
         assert {tool.name for tool in agent.tools} == {'list_files', 'search_code', 'read_file'}
         assert 'README.md' in payload
+        assert 'plan_validation_feedback' in json.loads(payload)
+        assert 'previous_plan' in json.loads(payload)
         assert 'recipe="general"' in agent.instructions
         return SimpleNamespace(final_output=low_plan(), raw_responses=[])
 
@@ -166,3 +168,68 @@ def test_decora_profiles_fail_when_target_suites_are_missing(tmp_path):
     assert not result.passed
     for target in ['tests/browser', 'tests/migrations']:
         assert any(target in command.argv and not command.passed for command in result.commands)
+
+
+def test_invalid_plan_repairs_automatically_then_preserves_risk_approval(tmp_path):
+    from factory.models import Stage
+    from tests.support import ScriptedHarness, make_factory
+
+    repo = init_repo(tmp_path / 'repo')
+    task = PlanTask(id='backend', description='Change backend', files=['server.py'], acceptance=['works'])
+    invalid = low_plan(files=[], tasks=[task], risk='high')
+    valid = low_plan(files=['server.py'], tasks=[task], risk='high')
+
+    class Planner(ScriptedHarness):
+        def plan(self, job, context):
+            if job.plan:
+                assert 'server.py' in job.govern_feedback
+            return super().plan(job, context)
+
+    job = make_factory(tmp_path, repo, Planner([invalid, valid])).run(feature())
+    assert job.stage == Stage.AWAIT_HUMAN
+    assert job.resume_stage == Stage.BUILD
+    assert job.retries['plan_repair'] == 1
+    assert job.human_answers == []
+
+
+def test_plan_repair_exhaustion_pauses_with_actionable_details(tmp_path):
+    from factory.models import Stage
+    from tests.support import ScriptedHarness, make_factory
+
+    repo = init_repo(tmp_path / 'repo')
+    invalid = low_plan(context_files=['web/styles.css'])
+    job = make_factory(tmp_path, repo, ScriptedHarness([invalid])).run(feature())
+    assert job.stage == Stage.AWAIT_HUMAN
+    assert job.resume_stage == Stage.PLAN
+    assert job.retries['plan_repair'] == 2
+    assert 'Automatic plan repair exhausted' in job.question
+    assert 'web/styles.css' in job.question
+
+
+def test_plan_validation_reports_all_file_defects_together(tmp_path):
+    from factory.models import RepoContext
+
+    plan = low_plan(files=[], context_files=['web/styles.css'], tasks=[
+        PlanTask(id='api', description='API', files=['server.py'], acceptance=['works']),
+        PlanTask(id='ui', description='UI', files=['web/site.css'], acceptance=['works'])])
+    job = bare_job(tmp_path, context=RepoContext(root=str(tmp_path), top_files=[], snippets=[],
+                   has_flags_module=False, has_capabilities_route=False,
+                   file_inventory=['server.py', 'web/site.css']))
+    decision = review_plan(policy(), plan, job)
+    assert decision.retry_plan
+    for path in ['server.py', 'web/site.css', 'web/styles.css']:
+        assert path in decision.reason
+    assert plan.files == []  # Validation must not silently expand approved scope.
+
+
+def test_missing_infrastructure_pauses_but_omitted_profile_selection_repairs(tmp_path):
+    plan = low_plan(requires_migration=True, migration_plan='Preserve data; test recovery.')
+    rules = policy()
+    job = bare_job(tmp_path)
+    missing = review_plan(rules, plan, job)
+    assert missing.pause and not missing.retry_plan
+    rules.verification_profiles['migration'] = VerificationProfile(
+        description='Migration suite', kind='migration', commands=[['pytest', 'tests/migrations']])
+    omitted = review_plan(rules, plan, job)
+    assert omitted.retry_plan
+    assert 'Select a configured migration profile' in omitted.reason

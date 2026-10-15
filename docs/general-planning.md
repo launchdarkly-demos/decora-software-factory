@@ -155,3 +155,17 @@ Restart the worker to load this change. An existing paused planning job can be s
 one reply requesting replanning with the automatic validator; subsequent structural
 corrections happen internally. Use its current pause ID and do not approve a build
 until it reaches the separate risk-approval pause.
+
+## Builder source grounding
+
+Builder context contains exact contiguous source prefixes. Truncation instructions
+are separate metadata rather than synthetic code lines. For replacements outside
+that prefix, the Builder must read the relevant range through `read_file` during
+that attempt. Anchors absent from supplied/read source are rejected with corrective
+feedback. Each retry rebuilds the source payload from the current checkout.
+
+The edit applier rejects preview markers, empty proposals, out-of-plan files and
+whole-file writes over existing files. It simulates the entire sequence of edits
+before writing any file, so a bad later anchor does not leave earlier edits applied.
+This preflight protects against validation failures; it is not a filesystem transaction
+for disk errors or a rollback of commands run after successful edits.

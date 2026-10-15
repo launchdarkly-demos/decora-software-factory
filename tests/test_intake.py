@@ -1,13 +1,9 @@
 from pathlib import Path
 
-import pytest
-
 from factory.agents.recipes import CAPABILITIES_RETURN, FLAGS_NEEDLE
 from factory.context.repo import analyze_repo
 from factory.intake.load import load_feature, parse_issue_body
-from tests.support import ROOT, feature
-
-DECORA = Path("/Users/alexisroberson/Documents/Claude_Code_Projects/langgraph-projects/decor-agent")
+from tests.support import ROOT, feature, init_repo
 
 
 def test_json_spec_loads_the_room_mood_request() -> None:
@@ -64,9 +60,76 @@ def test_context_ignores_nested_worktrees(tmp_path: Path) -> None:
     assert "server.py" in context.top_files
 
 
-def test_decora_checkout_has_the_recipe_anchor() -> None:
-    server = DECORA / "server.py"
-    if not server.exists():
-        pytest.skip("Decora checkout is not on this machine")
+def test_mock_fixture_has_the_recipe_anchor(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path / "decor")
+    server = repo / "server.py"
     assert CAPABILITIES_RETURN in server.read_text()
-    assert FLAGS_NEEDLE in (DECORA / "app" / "flags.py").read_text()
+    assert FLAGS_NEEDLE in (repo / "app" / "flags.py").read_text()
+
+
+def test_decora_request_preserves_scope_verification_and_optional_rollout():
+    body = '''## Goal
+Fix stale room names after reload.
+## Change type
+bug fix
+## Acceptance criteria
+- [ ] The updated name survives reload.
+- [x] Existing board selections stay intact.
+- [ ]
+## Scope and constraints
+Do not change the project schema.
+## Verification
+Reproduce a rename and reload in the browser; run the project API tests.
+## Rollout
+user-facing: yes
+feature flag: no
+key:
+default: off
+Reason: restore existing behavior.
+## Context
+See server.py and the room title component.
+<!-- ## Flag
+key: not-a-real-flag
+-->
+'''
+    result = parse_issue_body('Room rename', body)
+    assert result.summary == 'Fix stale room names after reload.'
+    assert result.change_type == 'bug fix'
+    assert result.acceptance == ['The updated name survives reload.', 'Existing board selections stay intact.']
+    assert result.scope == 'Do not change the project schema.'
+    assert 'browser' in result.verification
+    assert 'feature flag: no' in result.rollout
+    assert result.user_facing is True
+    assert result.flag_key is None
+    assert 'server.py' in result.hints[0]
+    # A requested rollout exception must not silently disable existing policy.
+    from factory.governance.policy import review_plan
+    from tests.support import bare_job, low_plan, policy
+    plan = low_plan().model_copy(update={'flag_key': None})
+    job = bare_job(ROOT, feature=result)
+    assert review_plan(policy(), plan, job).pause
+
+
+def test_unfilled_template_cannot_invent_acceptance_or_a_flag():
+    template = (ROOT / '.github/ISSUE_TEMPLATE/factory-task.md').read_text().split('---', 2)[2]
+    result = parse_issue_body('My idea', template)
+    assert result.acceptance == []
+    assert result.flag_key is None
+    assert result.user_facing is True  # unsure never bypasses user-facing governance
+    assert result.change_type == 'unspecified'
+    assert 'room title can be changed' not in result.summary
+
+
+def test_rollout_reads_explicit_internal_change_and_flag_key():
+    body = '''## Goal
+Expose a capability.
+## Rollout
+user-facing: no
+feature flag: yes
+key: decor-example
+default: off
+'''
+    result = parse_issue_body('Capability', body)
+    assert result.user_facing is False
+    assert result.flag_key == 'decor-example'
+    assert result.flag_default is False

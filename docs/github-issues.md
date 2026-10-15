@@ -91,3 +91,17 @@ multi-host distributed lock implementation.
 
 Kubernetes is not required to close these gaps. First make the single-host workflow
 reliable and support the classes of Decora tasks you actually want it to perform.
+
+## Request format
+
+The **Decora factory request** template starts with the product goal, change type,
+acceptance criteria, scope, verification, rollout, and context. The intake parser
+preserves scope, verification, and rollout text for the agents; context becomes
+file-discovery hints. Markdown checkboxes are accepted and instructional HTML
+comments are ignored. Existing Summary/Acceptance/Flag/Hints issues still work.
+
+A blank template has no acceptance criteria and therefore pauses. Choosing
+`feature flag: no` records a request, not a policy override: user-facing work still
+requires a default-off flag under the current policy. `user-facing: unsure` is
+conservatively treated as user-facing. This format supports proposing broader
+work without claiming the current Planner can automatically implement it.

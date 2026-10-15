@@ -40,6 +40,10 @@ class FeatureRequest(BaseModel):
     source: str = "file"
     issue_url: str | None = None
     hints: list[str] = Field(default_factory=list)
+    change_type: str = "unspecified"
+    scope: str = ""
+    verification: str = ""
+    rollout: str = ""
     demo_fail_first_build: bool = False
 
 

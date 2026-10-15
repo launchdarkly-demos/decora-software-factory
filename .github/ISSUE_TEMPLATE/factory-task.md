@@ -1,30 +1,61 @@
 ---
-name: Factory task
-about: Describe a small change for the Decora software factory
+name: Decora factory request
+about: Propose a Decora improvement, bug fix, or maintenance task
 title: ''
 ---
 
-## Summary
-Describe the requested behavior and why it matters.
+## Goal
+<!-- What problem should Decora solve? Who benefits? Describe the desired result.
+For a bug, include reproduction steps and actual versus expected behavior. -->
 
-## Acceptance
-- Behavior when the flag is off:
-- Behavior when the flag is on:
-- Existing behavior that must stay unchanged:
+## Change type
+<!-- Choose: feature, bug fix, refactor, documentation, infrastructure, or unsure. -->
 
-## Flag
-key: replace-with-your-flag-key
+## Acceptance criteria
+<!-- Add concrete, observable outcomes, one per line. Examples:
+- [ ] The room title can be changed and remains changed after reload.
+- [ ] An empty title shows a useful validation message.
+- [ ] Existing room boards and saved selections are preserved.
+Replace these examples with criteria for this request. -->
+- [ ]
+
+## Scope and constraints
+<!-- What is included? What is out of scope? Add compatibility or data constraints.
+The defaults below protect Decora's product behavior; identify any requested exception
+for human review rather than asking the agent to bypass it. -->
+- Preserve existing room, board, and project behavior outside this request.
+- Do not invent catalog products, SKUs, prices, or availability.
+- Preserve human approval before purchase or other spending commitments.
+
+## Verification
+<!-- How should we prove this works? Include test commands, bug reproduction steps,
+API examples, or browser checks. For UI work, describe expected visible behavior
+and include screenshots/mockups if helpful. Write "unsure" if you need help. -->
+
+## Rollout
+<!-- This is a rollout decision, not the definition of the task.
+Use yes/no/unsure for user-facing and feature flag. If a flag is needed, supply
+its key when known and keep default off. Explain why no flag is appropriate when
+choosing no. Current policy still requires flags for user-facing changes; an
+exception needs human review. The factory does not merge, deploy, or enable flags. -->
+user-facing: unsure
+feature flag: unsure
+key:
 default: off
 
-## User facing
-yes
+## Context
+<!-- Relevant paths, related issues/PRs, API routes, logs without secrets,
+or design references. These are hints, not required implementation instructions. -->
 
-## Hints
-- Relevant source or test paths
-- Any constraints on implementation
+<!-- Maintainer workflow:
+1. Refine the goal, acceptance criteria, and scope before adding factory:ready.
+2. That label authorizes agent calls and draft PR publication on the configured worker.
+3. The factory plans, builds in isolation, verifies, and reviews supported work.
+4. Follow the status comment; answer clarification through its local CLI command.
+5. Review and test the draft PR before merging.
 
-<!-- A maintainer adds factory:ready AFTER refining the request.
-The label opts into agent calls and draft PR publishing on the configured worker.
-Do not include credentials. One issue starts one job; edits do not resubmit it.
-The current Planner supports flag-controlled capability fields; broader changes pause.
+Current implementation reliably supports flag-controlled capability fields.
+Other request types may be proposed here but currently pause for human review;
+this template does not claim UI/browser or general-purpose implementation support.
+One issue starts one job. Edits/relabeling do not rerun it. Do not include secrets.
 -->

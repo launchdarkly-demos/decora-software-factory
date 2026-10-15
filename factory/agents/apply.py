@@ -3,6 +3,7 @@ from __future__ import annotations
 from factory.errors import FactoryError, GovernanceError
 from factory.models import BuildProposal, BuildResult, JobState
 from factory.tools.layer import ToolLayer
+from factory.verification.formatting import format_python
 
 
 def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> BuildResult:
@@ -38,6 +39,7 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
             staged[edit.path] = text.replace(edit.old, edit.new, 1)
     for rel, text in staged.items():
         tools.write(rel, text)
+    format_python(tools, list(staged))
     for command in proposal.commands:
         report = tools.run(command)
         if not report.passed:

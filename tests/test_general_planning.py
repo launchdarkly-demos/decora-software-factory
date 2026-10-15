@@ -130,3 +130,39 @@ def test_rejecting_risk_approval_returns_to_planning(tmp_path):
                    plan=low_plan(risk='high'))
     factory.accept_answer(job, 'No, preserve the old data model instead')
     assert job.stage == Stage.PLAN
+
+
+def test_decora_policy_covers_home_projects_without_bypassing_migration_approval(tmp_path):
+    from factory.governance.policy import load_policy
+    from factory.verification.profiles import selected_profiles
+    from tests.support import ROOT
+
+    rules = load_policy(ROOT / 'policy.decora.yaml')
+    plan = low_plan(files=['web/studio.js', 'app/store.py'], requires_migration=True,
+                    migration_plan='Preserve legacy records; test repeat and partial migration.')
+    assert set(selected_profiles(rules, plan, plan.files)) == {'studio-browser', 'migration'}
+    assert prerequisites(rules, plan, plan.files) == []
+    decision = review_plan(rules, plan, bare_job(tmp_path))
+    assert decision.pause and decision.resume_stage == 'build'
+
+
+def test_decora_profiles_fail_when_target_suites_are_missing(tmp_path):
+    from factory.governance.policy import load_policy
+    from factory.tools.layer import ToolLayer
+    from factory.verification.gate import VerificationGate
+    from tests.support import ROOT
+
+    repo = init_repo(tmp_path / 'repo')
+    rules = load_policy(ROOT / 'policy.decora.yaml')
+    rules.regression_tests = []
+    tools = ToolLayer(repo, rules)
+    base = tools.head_sha()
+    tools.write('web/studio.html', '<h1>Homes</h1>')
+    tools.commit('Frontend change', ['web/studio.html'])
+    plan = low_plan(flag_key=None, test_targets=[], verification_profiles=['migration'])
+    job = bare_job(tmp_path, plan=plan,
+                   worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=base))
+    result = VerificationGate(repo, tmp_path / 'home').run(job, tools)
+    assert not result.passed
+    for target in ['tests/browser', 'tests/migrations']:
+        assert any(target in command.argv and not command.passed for command in result.commands)

@@ -12,7 +12,7 @@ stage_timeout_seconds:
   plan: 120
   govern_plan: 30
   build: 180
-  verify: 180
+  verify: 600
   ensure_flag: 90
   review: 120
   govern_ship: 30
@@ -76,3 +76,34 @@ regression_tests:
 - test_api_project.py
 - test_board.py
 - test_flinch_gate.py
+
+# These are required test contracts, not a claim that the target suites exist.
+# The implementation must provide the suites; missing tests/tooling fail verification.
+verification_profiles:
+  studio-browser:
+    description: >-
+      Real Chromium acceptance tests using pytest-playwright in tests/browser.
+      Implement fixtures that start/stop the isolated app and exercise actual Studio
+      interactions, home/room isolation, stale selections, and flag-off/on behavior.
+      Do not replace browser interaction with unit tests or skip missing dependencies.
+    kind: browser
+    paths:
+    - web/*
+    - tests/browser/*
+    commands:
+    - ['{python}', '-m', 'pytest', '-q', '-o', 'addopts=', '--browser', 'chromium', 'tests/browser']
+  migration:
+    description: >-
+      Stored-data migration tests in tests/migrations. Implement legacy fixtures,
+      data preservation, repeat migration, partial-failure recovery, and flag-off
+      compatibility after migration. Use isolated temporary storage, never live data.
+      Select this profile for every plan declaring requires_migration.
+    kind: migration
+    paths:
+    - migrations/*
+    - app/migrations/*
+    - app/store.py
+    - app/project.py
+    - tests/migrations/*
+    commands:
+    - ['{python}', '-m', 'pytest', '-q', '-o', 'addopts=', 'tests/migrations']

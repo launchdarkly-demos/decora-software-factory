@@ -93,7 +93,8 @@ still a convention check; behavioral flag tests and review remain necessary.
   narrower issues and human planning review.
 - Decora's browser suite and migration test suite for home projects still need to be
   implemented/provisioned. This change deliberately does not claim they exist or mark
-  Issue #5 ready. The policy examples above are not enabled in `policy.decora.yaml`.
+  Issue #5 verified. `policy.decora.yaml` now enables the browser and migration
+  test contracts described below; configuring commands does not supply their tests.
 - Multi-host scheduling, stronger runtime isolation, spending budgets, preview deploys,
   automatic PR-feedback handling, and service supervision remain separate work.
 
@@ -115,3 +116,24 @@ off and are checked in LaunchDarkly before review; changes without a flag skip t
 API step. A feature flag is not a substitute for migration safety.
 Restart long-running workers after changing code or policy; existing saved plans
 retain their explicit flag keys and are not automatically reclassified.
+
+## Decora home-project verification contract
+
+`policy.decora.yaml` selects `studio-browser` for Studio changes and `migration`
+for storage/model changes. The Planner must also select `migration` whenever
+`requires_migration` is true, including migrations outside those path patterns.
+The implementation must create `tests/browser` and `tests/migrations` in the
+isolated Decora checkout. Missing suites, no collected tests, missing browser tooling,
+or failed checks block verification. Do not use skipped tests as acceptance evidence.
+
+Provision pytest-playwright and its Chromium browser in the target Python environment
+before running the browser profile. The gate uses Decora's `venv/bin/python`, then
+`.venv/bin/python`, falling back to the factory interpreter. Browser test fixtures
+must own app startup/teardown and temporary storage; no manually running Decora
+instance should be required. Tests must not depend on paid model calls or live data.
+
+After a policy change, stop and restart the worker using the same `--home`, queue,
+and `--policy policy.decora.yaml`. For an already paused job, use its current pause ID
+and answer with replanning instructions to select these profiles and implement their
+suites. Do not answer `approve` to bypass a missing verification prerequisite.
+A migration plan still pauses separately for human review before building.

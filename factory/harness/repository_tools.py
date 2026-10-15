@@ -9,7 +9,7 @@ from factory.errors import FactoryError
 from factory.governance.policy import Policy
 
 
-def repository_tools(root: Path, policy: Policy):
+def repository_tools(root: Path, policy: Policy, *, observed: dict[str, list[str]] | None = None):
     from agents import function_tool
 
     reader = RepositoryReader(root, policy)
@@ -43,6 +43,17 @@ def repository_tools(root: Path, policy: Policy):
     @function_tool
     def read_file(path: str, start_line: int = 1, line_count: int = 160) -> str:
         """Read exact source text; use 1-based start_line and at most 200 lines per call."""
-        return bounded(lambda: reader.read(path, start_line, line_count))
+        succeeded = False
+
+        def read():
+            nonlocal succeeded
+            text = reader.read(path, start_line, line_count)
+            succeeded = True
+            return text
+
+        result = bounded(read)
+        if succeeded and observed is not None:
+            observed.setdefault(path, []).append(result)
+        return result
 
     return [list_files, search_code, read_file]

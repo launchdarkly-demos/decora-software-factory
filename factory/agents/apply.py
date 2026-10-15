@@ -10,18 +10,34 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
         raise RuntimeError("build requires a worktree")
     if job.plan is None:
         raise GovernanceError("build requires an approved plan")
-    # Validate every edit before applying any; scope is enforced outside the model.
+    if not proposal.edits:
+        raise FactoryError("Builder returned no edits. Read the approved files and return concrete changes.")
+    # Stage edits in memory, in order. A bad later anchor must not leave partial edits.
+    staged: dict[str, str] = {}
     for edit in proposal.edits:
         if edit.path not in job.plan.files:
             raise GovernanceError(f"Edit outside approved plan: {edit.path}")
         path = tools._resolve(edit.path)
-        if edit.kind == "write" and path.exists():
-            raise FactoryError(f"Use replace for existing file: {edit.path}")
-    for edit in proposal.edits:
+        for value in (edit.old, edit.new, edit.content):
+            if any(marker in value for marker in (
+                "[excerpt; use read_file for more]", "[omitted; use read_file for exact text]"
+            )):
+                raise FactoryError(f"{edit.path}: preview markers are not source code. "
+                                   "Read exact source with read_file and use a unique verbatim anchor.")
+        exists = edit.path in staged or path.exists()
         if edit.kind == "write":
-            tools.write(edit.path, edit.content)
+            if exists:
+                raise FactoryError(f"Use replace for existing file: {edit.path}")
+            staged[edit.path] = edit.content
         else:
-            tools.replace(edit.path, edit.old, edit.new)
+            text = staged[edit.path] if edit.path in staged else tools.read(edit.path)
+            count = text.count(edit.old) if edit.old else 0
+            if count != 1:
+                raise FactoryError(f"{edit.path} anchor matched {count} times. "
+                                   "Read the current file with read_file and choose a unique exact anchor.")
+            staged[edit.path] = text.replace(edit.old, edit.new, 1)
+    for rel, text in staged.items():
+        tools.write(rel, text)
     for command in proposal.commands:
         report = tools.run(command)
         if not report.passed:

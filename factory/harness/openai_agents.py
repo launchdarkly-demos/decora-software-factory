@@ -7,7 +7,7 @@ from pathlib import Path
 
 from factory.agents.apply import apply_proposal
 from factory.agents.prompts import BUILDER_INSTRUCTIONS, PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
-from factory.context.repo import RepositoryReader, _keywords, focused_excerpt
+from factory.context.repo import RepositoryReader
 from factory.errors import FactoryError
 from factory.governance.policy import Policy
 from factory.harness.repository_tools import repository_tools
@@ -69,11 +69,13 @@ class OpenAIAgentsHarness:
         from agents import Agent
 
         latest = job.latest_verify()
+        files = _file_excerpts(job, tools)
+        observed = {item["path"]: [item["text"]] for item in files}
         payload = json.dumps(
             {
                 "feature": _feature_for_model(job),
                 "plan": job.plan.model_dump() if job.plan else None,
-                "files": _file_excerpts(job, tools),
+                "files": files,
                 "verification": latest.actionable if latest else "",
                 "govern_feedback": job.govern_feedback,
                 "review_feedback": job.review.model_dump() if job.review else None,
@@ -87,7 +89,7 @@ class OpenAIAgentsHarness:
             name="Builder",
             instructions=BUILDER_INSTRUCTIONS,
             output_type=BuildProposal,
-            tools=repository_tools(tools.worktree, tools.policy),
+            tools=repository_tools(tools.worktree, tools.policy, observed=observed),
             model=self.model,
             model_settings=ModelSettings(max_tokens=6000),
         )
@@ -100,6 +102,10 @@ class OpenAIAgentsHarness:
         output = result.final_output
         proposal = output if isinstance(output, BuildProposal) else BuildProposal.model_validate(output)
         _reject_oversized_edits(proposal)
+        for edit in proposal.edits:
+            if edit.kind == "replace" and not any(edit.old in text for text in observed.get(edit.path, [])):
+                raise FactoryError(f"{edit.path}: replacement anchor was not read in this attempt. "
+                                   "Use read_file with its exact line range before proposing the replacement.")
         return apply_proposal(job, tools, proposal)
 
     def review(self, job: JobState, tools: ToolLayer):
@@ -156,8 +162,10 @@ def _file_excerpts(job: JobState, tools: ToolLayer) -> list[dict[str, str]]:
             text = reader.resolve(rel).read_text(errors="replace")
         except FactoryError:
             continue
-        excerpt = focused_excerpt(text, _keywords(job.feature), limit=min(budget, 6000))
-        excerpts.append({"path": rel, "text": excerpt})
+        excerpt = text[:min(budget, 12000)]
+        excerpts.append({"path": rel, "text": excerpt,
+                         "source_kind": "exact_prefix", "truncated": str(len(excerpt) < len(text)).lower(),
+                         "instruction": "Use read_file for source beyond this prefix; metadata is not code."})
         budget -= len(excerpt)
     return excerpts
 

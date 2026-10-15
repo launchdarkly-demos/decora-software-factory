@@ -73,6 +73,12 @@ def main(argv: list[str] | None = None) -> int:
     issue.add_argument("--slug", required=True, help="GitHub owner/name")
     issue.add_argument("--number", type=int, required=True)
 
+    plan = add("plan", "preview an implementation plan without building or publishing")
+    plan_source = plan.add_mutually_exclusive_group(required=True)
+    plan_source.add_argument("--spec", type=Path)
+    plan_source.add_argument("--slug", help="GitHub owner/name")
+    plan.add_argument("--number", type=int)
+
     resume = add("resume", "answer a paused job and continue")
     resume.add_argument("job_id")
     resume.add_argument("--answer", required=True)
@@ -94,6 +100,20 @@ def _dispatch(args: argparse.Namespace) -> int:
     policy_path = args.policy or (root / "policy.yaml")
     policy = load_policy(policy_path)
     repo = args.repo.resolve()
+    if args.cmd == "plan":
+        from factory.planning import preview_plan
+
+        if args.slug and not args.number:
+            raise FactoryError("--number is required with --slug")
+        preview_feature = load_github_issue(args.slug, args.number) if args.slug else load_feature(args.spec)
+        preview_harness: AgentHarness
+        if args.agents == "openai":
+            ensure_env_key(root, "OPENAI_API_KEY")
+            preview_harness = OpenAIAgentsHarness(policy=policy)
+        else:
+            preview_harness = MockHarness()
+        preview_plan(repo, home, preview_feature, policy, preview_harness)
+        return 0
     if args.push and not policy.pull_request.allow_push:
         print("policy.yaml pull_request.allow_push is false. This factory will not push.", file=sys.stderr)
         return 1
@@ -111,7 +131,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     if args.agents == "openai":
         source = ensure_env_key(root, "OPENAI_API_KEY")
         print(f"OpenAI: live (key from {source})")
-        harness = OpenAIAgentsHarness()
+        harness = OpenAIAgentsHarness(policy=policy)
     else:
         print("OpenAI: mock (--agents mock)")
         harness = MockHarness()

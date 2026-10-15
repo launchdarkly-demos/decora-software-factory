@@ -40,6 +40,10 @@ class FeatureRequest(BaseModel):
     source: str = "file"
     issue_url: str | None = None
     hints: list[str] = Field(default_factory=list)
+    change_type: str = "unspecified"
+    scope: str = ""
+    verification: str = ""
+    rollout: str = ""
     demo_fail_first_build: bool = False
 
 
@@ -54,6 +58,16 @@ class RepoContext(BaseModel):
     snippets: list[Snippet]
     has_flags_module: bool
     has_capabilities_route: bool
+    file_inventory: list[str] = Field(default_factory=list)
+    verification_profiles: dict[str, dict] = Field(default_factory=dict)
+
+
+class PlanTask(BaseModel):
+    id: str
+    description: str
+    files: list[str]
+    depends_on: list[str] = Field(default_factory=list)
+    acceptance: list[str] = Field(default_factory=list)
 
 
 class ImplementationPlan(BaseModel):
@@ -68,6 +82,15 @@ class ImplementationPlan(BaseModel):
     questions: list[str]
     recipe: str
     context_files: list[str] = Field(default_factory=list)
+    tasks: list[PlanTask] = Field(default_factory=list)
+    verification_profiles: list[str] = Field(default_factory=list)
+    large_change: bool = False
+    important_ux_change: bool = False
+    flag_rationale: str = ""
+    requires_migration: bool = False
+    migration_plan: str = ""
+    risks: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
 
 
 class FileEdit(BaseModel):

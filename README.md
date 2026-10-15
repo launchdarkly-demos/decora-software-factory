@@ -132,7 +132,7 @@ Artifacts for a run:
 
 ## LaunchDarkly
 
-Every new user-facing behavior is wrapped in a flag whose code default is off. The verifier and the ship gate both read the diff. A builder summary that claims the flag exists is not evidence.
+Flags are required for medium/high-risk changes, large capabilities, significant changes to core user flows, and explicitly requested flags. Small user-facing fixes and polish do not automatically need a flag. The Planner records its rollout rationale; flags that are used default off. The verifier and the ship gate both read the diff. A builder summary that claims the flag exists is not evidence.
 
 When a token is available, passing verification is not enough to reach the reviewer. The factory calls the LaunchDarkly REST API and:
 
@@ -324,3 +324,25 @@ code bundles do not contain virtualenvs or secrets. Verification currently uses
 the target repo's Python environment when available, so another host must provide
 an equivalent environment. Containerized execution and shared object storage are
 future deployment steps, not requirements for this local run.
+
+## Submit GitHub issues
+
+Use the **Factory task** issue template, then have a maintainer add `factory:ready`.
+The `factory temporal watch-issues` bridge submits one durable job per issue and
+updates a status comment with clarification instructions and the draft PR link.
+It uses the existing Temporal worker; it does not require a public webhook or a
+GitHub Actions runner. See [setup, commands, behavior, and remaining work](docs/github-issues.md).
+
+The real Planner now supports broader request types. Actual UI and migration builds
+still require the target's browser/migration verification profiles; see the general
+planning guide below.
+
+## General planning and frontend work
+
+The real Planner supports general tasks and produces ordered subtasks, dependencies,
+risks, assumptions, and migration plans. Repository discovery includes frontend code;
+all three real agents can inspect source through bounded read-only tools. The Builder
+must stay within the approved file list, and verification runs maintainer-defined
+profiles in addition to Python checks. UI and migration work pause when their required
+profiles are missing. Use `factory plan` to preview an issue without building it.
+See [commands, verification configuration, and limits](docs/general-planning.md).

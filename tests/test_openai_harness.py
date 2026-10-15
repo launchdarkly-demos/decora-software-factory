@@ -72,11 +72,12 @@ def test_build_commands_run_after_edits(tmp_path):
     from factory.agents.apply import apply_proposal
     from factory.models import BuildProposal, FileEdit
     from factory.tools.layer import ToolLayer
-    from tests.support import init_repo, policy
+    from tests.support import init_repo, low_plan, policy
 
     repo = init_repo(tmp_path / 'target')
     tools = ToolLayer(repo, policy())
-    job = bare_job(tmp_path, worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
+    job = bare_job(tmp_path, worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()),
+                   plan=low_plan(files=['test_new.py']))
     proposal = BuildProposal(
         summary='add test', commit_message='add test',
         edits=[FileEdit(path='test_new.py', kind='write', content='def test_new():\n    assert True\n')],

@@ -117,8 +117,14 @@ class ScriptedHarness:
             if callable(item):
                 return item(job, tools)
             return item
+        commit = "deadbeef"
+        if job.plan and job.plan.flag_key:
+            tools.write("app/room_mood.py",
+                        f'FLAG_KEY = {job.plan.flag_key!r}\nFLAG_DEFAULT = False\n'
+                        f'# Build attempt {self.build_calls}\n')
+            commit = tools.commit("Scripted flag fixture", ["app/room_mood.py"])
         return BuildResult(
-            commit="deadbeef",
+            commit=commit,
             changed_files=["app/room_mood.py"],
             summary="scripted build",
             attempt=self.build_calls,

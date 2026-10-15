@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from factory.errors import FactoryError
-from factory.governance.policy import Policy
+from factory.governance.policy import Policy, flag_required
 from factory.launchdarkly.client import LaunchDarklyClient
 from factory.launchdarkly.token import resolve_token, scrub
 from factory.models import FlagAssurance, JobState
@@ -52,7 +52,7 @@ class LaunchDarklyService:
     def ensure(self, job: JobState) -> FlagAssurance:
         key = _flag_key(job)
         rules = self.policy.launchdarkly
-        required = bool(job.feature.user_facing and self.policy.flags.required_for_user_facing and key)
+        required = flag_required(self.policy, job)
         if not required:
             return FlagAssurance(
                 mode="offline",
@@ -61,7 +61,8 @@ class LaunchDarklyService:
                 project_key=rules.project_key,
                 detail="no LaunchDarkly flag required for this change",
             )
-        assert key is not None
+        if not key:
+            raise FactoryError("Required rollout flag has no key; return to planning.")
         if self.mode == "offline":
             return self._skipped(key, "live LaunchDarkly check skipped (--ld offline)")
         token, _source = self._token()

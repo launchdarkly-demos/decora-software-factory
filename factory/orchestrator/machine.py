@@ -116,6 +116,8 @@ class Factory:
         self._open_logs(job)
         job.human_answers.append(answer.strip())
         dest = job.resume_stage or Stage.PLAN
+        if dest == Stage.BUILD and answer.strip().lower() not in {"approve", "approved", "ship it", "continue"}:
+            dest = Stage.PLAN
         assert_legal(Stage.AWAIT_HUMAN, dest)
         job.paused = False
         job.question = None
@@ -194,6 +196,10 @@ class Factory:
 
     def _intake(self, job: JobState) -> Transition:
         feature = job.feature
+        if feature.source == "github_issue":
+            from factory.intake.load import check_issue_target
+
+            check_issue_target(self.target_repo, feature.issue_url)
         if not feature.id.strip() or not feature.title.strip() or not feature.summary.strip():
             return Transition(
                 stage=Stage.FAILED,
@@ -209,7 +215,7 @@ class Factory:
             self.prepare_build(job)
             assert job.worktree is not None
             context_root = Path(job.worktree.path)
-        context = analyze_repo(context_root, job.feature)
+        context = analyze_repo(context_root, job.feature, self.policy)
         job.context = context
         self._write_model(job, "context.json", context)
         return Transition(

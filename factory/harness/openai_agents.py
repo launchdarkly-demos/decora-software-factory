@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 
 from factory.agents.apply import apply_proposal
 from factory.agents.prompts import BUILDER_INSTRUCTIONS, PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
+from factory.context.repo import RepositoryReader, _keywords, focused_excerpt
 from factory.errors import FactoryError
+from factory.governance.policy import Policy
+from factory.harness.repository_tools import repository_tools
 from factory.harness.tokens import charge_provider
 from factory.models import BuildProposal, ImplementationPlan, JobState, RepoContext, ReviewReport
 from factory.tools.layer import ToolLayer
@@ -19,7 +23,8 @@ class OpenAIAgentsHarness:
     ``OPENAI_API_KEY`` comes from the environment or the gitignored project ``.env``.
     """
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, policy: Policy | None = None) -> None:
+        self.policy = policy or Policy()
         self.model = model or os.environ.get("FACTORY_OPENAI_MODEL", "gpt-4.1")
         try:
             import agents  # noqa: F401
@@ -44,6 +49,7 @@ class OpenAIAgentsHarness:
             name="Planner",
             instructions=PLANNER_INSTRUCTIONS,
             output_type=ImplementationPlan,
+            tools=repository_tools(Path(context.root), self.policy),
             model=self.model,
         )
         try:
@@ -67,6 +73,8 @@ class OpenAIAgentsHarness:
                 "files": _file_excerpts(job, tools),
                 "verification": latest.actionable if latest else "",
                 "govern_feedback": job.govern_feedback,
+                "review_feedback": job.review.model_dump() if job.review else None,
+                "human_answers": job.human_answers,
             }
         )
         from agents import ModelSettings
@@ -75,6 +83,7 @@ class OpenAIAgentsHarness:
             name="Builder",
             instructions=BUILDER_INSTRUCTIONS,
             output_type=BuildProposal,
+            tools=repository_tools(tools.worktree, tools.policy),
             model=self.model,
             model_settings=ModelSettings(max_tokens=6000),
         )
@@ -107,6 +116,7 @@ class OpenAIAgentsHarness:
             name="Reviewer",
             instructions=REVIEWER_INSTRUCTIONS,
             output_type=ReviewReport,
+            tools=repository_tools(tools.worktree, tools.policy) if isinstance(tools, ToolLayer) else [],
             model=self.model,
         )
         try:
@@ -129,61 +139,28 @@ def _file_excerpts(job: JobState, tools: ToolLayer) -> list[dict[str, str]]:
     if job.plan is not None:
         names.extend(job.plan.files)
         names.extend(job.plan.context_files)
-    for extra in ("app/flags.py", "server.py"):
-        if extra not in names:
-            names.append(extra)
+    reader = RepositoryReader(tools.worktree, tools.policy)
     excerpts: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for rel in names:
-        if rel in seen or len(excerpts) >= 6:
-            continue
-        seen.add(rel)
+    budget = 40_000
+    for rel in dict.fromkeys(names):
+        if budget <= 0 or len(excerpts) >= 12:
+            break
         try:
-            text = tools.read(rel)
+            if rel not in reader.paths:
+                continue
+            text = reader.resolve(rel).read_text(errors="replace")
         except FactoryError:
             continue
-        excerpts.append({"path": rel, "text": _focused_excerpt(rel, text)})
+        excerpt = focused_excerpt(text, _keywords(job.feature), limit=min(budget, 6000))
+        excerpts.append({"path": rel, "text": excerpt})
+        budget -= len(excerpt)
     return excerpts
-
-
-def _focused_excerpt(rel: str, text: str) -> str:
-    needles = _WINDOWS.get(rel, ())
-    if needles:
-        window = _window(text, needles)
-        if window:
-            return window
-    # Keep ordinary generated test files whole so repair anchors remain visible.
-    if len(text) > 12000:
-        return text[:12000] + "\n# ... truncated\n"
-    return text
-
-
-def _window(text: str, needles: tuple[str, ...]) -> str:
-    lines = text.splitlines()
-    keep: set[int] = set()
-    for index, line in enumerate(lines):
-        if any(needle in line for needle in needles):
-            start = max(0, index - 8)
-            end = min(len(lines), index + 18)
-            keep.update(range(start, end))
-    if not keep:
-        return ""
-    chunks: list[str] = []
-    previous = -2
-    for index in sorted(keep):
-        if index != previous + 1 and chunks:
-            chunks.append("# ...")
-        chunks.append(lines[index])
-        previous = index
-    return "\n".join(chunks)
 
 
 def _reject_oversized_edits(proposal: BuildProposal) -> None:
     for edit in proposal.edits:
-        if edit.kind == "write" and edit.path in {"server.py", "app/flags.py"}:
-            raise FactoryError(f"Do not rewrite {edit.path}. Use a short replace around the existing lines.")
-        if edit.kind == "replace" and (len(edit.old) > 1200 or len(edit.new) > 1200):
-            raise FactoryError(f"{edit.path} replace is too large. Keep the anchor to a few lines.")
+        if edit.kind == "replace" and (not edit.old or len(edit.old) > 16000 or len(edit.new) > 16000):
+            raise FactoryError(f"{edit.path}: use a nonempty, focused replace anchor and read exact source first.")
 
 
 def _builder_failure(exc: BaseException) -> str:
@@ -192,11 +169,6 @@ def _builder_failure(exc: BaseException) -> str:
         return "Builder output hit the token limit. Use a short replace snippet, not the whole file."
     return f"Builder call failed: {exc.__class__.__name__}"
 
-
-_WINDOWS = {
-    "app/flags.py": ("BOARD_INTAKE_FLAG", "def get_flag"),
-    "server.py": ("def capabilities", "from app.flags import", "sample_board"),
-}
 
 
 def _run_agent(agent, payload: str):
@@ -210,7 +182,7 @@ def _run_agent(agent, payload: str):
     client = AsyncOpenAI()
     try:
         return Runner.run_sync(
-            agent, payload, run_config=RunConfig(model_provider=OpenAIProvider(openai_client=client))
+            agent, payload, max_turns=20, run_config=RunConfig(model_provider=OpenAIProvider(openai_client=client))
         )
     finally:
         loop.run_until_complete(client.close())

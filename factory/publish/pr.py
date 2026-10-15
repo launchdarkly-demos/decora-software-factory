@@ -93,12 +93,7 @@ class PublicationError(Exception):
 def _flag_lines(job: JobState) -> list[str]:
     record = job.launchdarkly
     if record is not None and record.url:
-        lines = [f"- LaunchDarkly: {record.url}"]
-        if record.created:
-            lines.append("- Created in LaunchDarkly. Targeting is off and the off variation is false.")
-        elif record.reused:
-            lines.append("- Reused the existing LaunchDarkly flag. Targeting is off and the off variation is false.")
-        return lines
+        return [f"- [LaunchDarkly flag]({record.url})"]
     if record is not None and record.required and record.mode == "offline":
         return ["- Live LaunchDarkly check skipped (`--ld offline` or no API token)."]
     return []
@@ -107,6 +102,13 @@ def _flag_lines(job: JobState) -> list[str]:
 def render_pr(job: JobState, diff: str) -> str:
     plan = job.plan
     review = job.review
+    flag_key = job.feature.flag_key or (plan.flag_key if plan else None)
+    flag_section = (["- No feature flag required for this change."]
+                    if not flag_key else [
+                        f"- Behind `{flag_key}`; code default: "
+                        + ("on." if (plan.flag_default if plan else job.feature.flag_default) else "off."),
+                        "- Enabling the feature is a separate human release decision.",
+                        *_flag_lines(job)])
     lines = [
         f"# {job.feature.title}",
         "",
@@ -116,14 +118,13 @@ def render_pr(job: JobState, diff: str) -> str:
         "",
         "## Summary",
         "",
+        *([f"Related issue: {job.feature.issue_url}", ""] if job.feature.issue_url else []),
         job.feature.summary,
         "",
-        "## Flag",
+        "## Rollout",
         "",
-        f"- Key: `{job.feature.flag_key or (plan.flag_key if plan else None)}`",
-        "- Code default: off",
-        *_flag_lines(job),
-        "- A human turns the flag on in LaunchDarkly. This pull request does not.",
+        *flag_section,
+        *([f"- Rollout rationale: {plan.flag_rationale}"] if plan and plan.flag_rationale else []),
         "",
         "## Implementation plan",
         "",
@@ -131,6 +132,12 @@ def render_pr(job: JobState, diff: str) -> str:
     if plan:
         for step in plan.steps:
             lines.append(f"- {step}")
+        if plan.tasks:
+            lines.extend(["", "Planned tasks:"])
+            for task in plan.tasks:
+                lines.append(f"- {task.id}: {task.description} (depends on: {', '.join(task.depends_on) or 'none'})")
+        if plan.requires_migration:
+            lines.extend(["", "Migration and recovery:", "", plan.migration_plan])
         if plan.context_files:
             lines.append("")
             lines.append("Context files the planner saw:")

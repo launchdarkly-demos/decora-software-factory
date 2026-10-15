@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from factory.errors import GovernanceError
 from factory.models import BuildProposal, BuildResult, JobState
 from factory.tools.layer import ToolLayer
 
@@ -7,6 +8,15 @@ from factory.tools.layer import ToolLayer
 def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> BuildResult:
     if job.worktree is None:
         raise RuntimeError("build requires a worktree")
+    if job.plan is None:
+        raise GovernanceError("build requires an approved plan")
+    # Validate every edit before applying any; scope is enforced outside the model.
+    for edit in proposal.edits:
+        if edit.path not in job.plan.files:
+            raise GovernanceError(f"Edit outside approved plan: {edit.path}")
+        path = tools._resolve(edit.path)
+        if edit.kind == "write" and path.exists():
+            raise GovernanceError(f"Use replace for existing file: {edit.path}")
     for edit in proposal.edits:
         if edit.kind == "write":
             tools.write(edit.path, edit.content)

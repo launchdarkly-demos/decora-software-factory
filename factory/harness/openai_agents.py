@@ -43,6 +43,8 @@ class OpenAIAgentsHarness:
                 "feature": _feature_for_model(job),
                 "context": context.model_dump(),
                 "answers": job.human_answers,
+                "plan_validation_feedback": job.govern_feedback,
+                "previous_plan": job.plan.model_dump() if job.plan else None,
             }
         )
         agent = Agent(

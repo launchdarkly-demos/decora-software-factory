@@ -235,15 +235,17 @@ class Factory:
         if job.plan is None:
             return Transition(stage=Stage.FAILED, detail="no plan", error="no plan")
         decision = review_plan(self.policy, job.plan, job)
+        if decision.retry_plan:
+            used = job.retries.get("plan_repair", 0)
+            job.govern_feedback = decision.reason
+            if used < self.policy.max_retries.get("plan_repair", 2):
+                job.retries["plan_repair"] = used + 1
+                return Transition(stage=Stage.PLAN, detail="Repairing plan: " + decision.reason)
+            return Transition(stage=Stage.AWAIT_HUMAN,
+                              detail="Automatic plan repair exhausted. " + decision.reason,
+                              resume_stage=Stage.PLAN)
+        job.govern_feedback = None
         if decision.pause:
-            if decision.resume_stage == "plan" and job.human_answers:
-                job.retries["plan"] = job.retries.get("plan", 0) + 1
-                if job.retries["plan"] > self.policy.max_retries.get("plan", 2):
-                    return Transition(
-                        stage=Stage.FAILED,
-                        detail="plan stayed ambiguous",
-                        error="plan stayed ambiguous",
-                    )
             resume = Stage(decision.resume_stage) if decision.resume_stage else Stage.PLAN
             return Transition(stage=Stage.AWAIT_HUMAN, detail=decision.reason, resume_stage=resume)
         if not decision.allowed:

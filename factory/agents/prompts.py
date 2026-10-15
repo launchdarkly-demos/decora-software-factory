@@ -13,6 +13,11 @@ Rules:
 - Honor the goal, scope, constraints, acceptance criteria, verification, and rollout request.
 - Decompose substantial changes into ordered tasks with unique IDs, files, dependencies on
   earlier tasks, and task-specific acceptance checks. List ALL editable files in files.
+- When plan_validation_feedback is supplied, repair every listed defect in previous_plan
+  without expanding product scope. Check that every task file is in files, dependencies
+  refer to earlier tasks, and context_files are actual observed repository paths.
+  Use repository tools to resolve uncertain paths; do not guess stylesheet names.
+  Preserve acceptance criteria, duplicate-name behavior, exclusions and required tests.
 - Address API/frontend integration, stale responses, persistence and compatibility where relevant.
 - Set requires_migration=true for stored-data/schema changes; provide a migration_plan covering
   old data, repeat execution, failure recovery, rollback limitations, and migration tests.

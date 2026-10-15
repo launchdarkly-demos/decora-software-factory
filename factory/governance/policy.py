@@ -44,7 +44,7 @@ class VerificationProfile(BaseModel):
 class Policy(BaseModel):
     version: int = 1
     max_retries: dict[str, int] = Field(
-        default_factory=lambda: {"verify": 2, "review": 1, "govern": 1, "plan": 2, "build": 3}
+        default_factory=lambda: {"verify": 2, "review": 1, "govern": 1, "plan": 2, "plan_repair": 2, "build": 3}
     )
     stage_timeout_seconds: dict[str, float] = Field(default_factory=dict)
     regression_tests: list[str] = Field(default_factory=list)
@@ -101,6 +101,7 @@ class Decision(BaseModel):
     allowed: bool = False
     pause: bool = False
     retry_build: bool = False
+    retry_plan: bool = False
     reason: str = ""
     resume_stage: str | None = None
 
@@ -134,11 +135,24 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
             reason="What behavior and acceptance checks should this change implement?",
             resume_stage="plan",
         )
-    blockers = task_problems(plan) + prerequisites(policy, plan, plan.files)
+    repairs = task_problems(plan)
     if job.context and job.context.file_inventory:
         missing = set(plan.context_files) - set(job.context.file_inventory)
         if missing:
-            blockers.append("Plan cites context files absent from the repository: " + ", ".join(sorted(missing)))
+            repairs.append("Plan cites context files absent from the repository: " + ", ".join(sorted(missing))
+                           + ". Inspect the inventory and read existing paths; do not invent context files.")
+    for name in plan.verification_profiles:
+        if name not in policy.verification_profiles:
+            repairs.append(f"Unknown verification profile {name!r}; select only configured profile names.")
+    if plan.requires_migration and not plan.migration_plan.strip():
+        repairs.append("Supply the required migration and recovery plan.")
+    blockers = prerequisites(policy, plan, plan.files)
+    for kind in ("browser", "migration"):
+        candidates = [name for name, profile in policy.verification_profiles.items() if profile.kind == kind]
+        if candidates and any(f"configured {kind} verification profile" in error for error in blockers):
+            repairs.append(f"Select a configured {kind} profile in verification_profiles: " + ", ".join(candidates))
+    if repairs:
+        return Decision(pause=True, retry_plan=True, reason="\n".join(repairs), resume_stage="plan")
     if blockers:
         return Decision(pause=True, reason=" ".join(blockers), resume_stage="plan")
     if plan.ambiguous and policy.approvals.pause_on_ambiguous:

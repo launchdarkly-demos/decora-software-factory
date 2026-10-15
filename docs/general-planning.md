@@ -137,3 +137,24 @@ and `--policy policy.decora.yaml`. For an already paused job, use its current pa
 and answer with replanning instructions to select these profiles and implement their
 suites. Do not answer `approve` to bypass a missing verification prerequisite.
 A migration plan still pauses separately for human review before building.
+
+## Automatic plan repair
+
+Before asking a human to approve a plan, governance collects task-file omissions,
+invalid task dependencies/IDs, missing task acceptance, nonexistent context paths,
+and missing/unknown selections of configured verification profiles. The Planner
+receives the complete defect list and previous plan and gets up to
+`max_retries.plan_repair` automatic correction attempts (default: 2 per job).
+No task files are silently added to approved scope, and existing paths must still
+be grounded in repository inventory/tools.
+
+If repair is exhausted, the job pauses with the remaining defects instead of failing
+or silently building. Missing infrastructure, product clarification, a missing flag
+key, and approval of valid migration/high-risk plans still require human input.
+This improves structural consistency, not proof of semantic correctness: generated
+plans and changes still need acceptance tests and review.
+
+Restart the worker to load this change. An existing paused planning job can be sent
+one reply requesting replanning with the automatic validator; subsequent structural
+corrections happen internally. Use its current pause ID and do not approve a build
+until it reaches the separate risk-approval pause.

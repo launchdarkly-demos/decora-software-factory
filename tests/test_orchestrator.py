@@ -321,3 +321,29 @@ def policy_with_build_timeout(seconds: float):
     limits = dict(rules.stage_timeout_seconds)
     limits["build"] = seconds
     return rules.model_copy(update={"stage_timeout_seconds": limits})
+
+
+def test_existing_file_write_returns_feedback_to_builder(tmp_path):
+    from factory.agents.apply import apply_proposal
+    from factory.models import BuildProposal, FileEdit, WorktreeInfo
+    from tests.support import bare_job
+
+    repo = init_repo(tmp_path / 'repo')
+    original = (repo / 'server.py').read_text()
+
+    class InvalidWrite(ScriptedHarness):
+        def build(self, job, tools):
+            return apply_proposal(job, tools, BuildProposal(
+                summary='Update existing file', commit_message='Update server',
+                edits=[FileEdit(path='server.py', kind='write', content='overwrite')]))
+
+    factory = make_factory(tmp_path, repo, InvalidWrite([]))
+    job = bare_job(tmp_path, stage=Stage.BUILD, plan=low_plan(files=['server.py']),
+                   worktree=WorktreeInfo(path=str(repo), branch='main', base_sha='HEAD'))
+    result = factory._build(job)
+    assert result.stage == Stage.BUILD
+    assert 'Use replace for existing file: server.py' in job.govern_feedback
+    assert job.retries['build'] == 1
+    assert (repo / 'server.py').read_text() == original
+    job.retries['build'] = factory.policy.max_retries['build']
+    assert factory._build(job).stage == Stage.FAILED

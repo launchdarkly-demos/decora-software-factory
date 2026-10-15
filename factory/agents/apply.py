@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from factory.errors import GovernanceError
+from factory.errors import FactoryError, GovernanceError
 from factory.models import BuildProposal, BuildResult, JobState
 from factory.tools.layer import ToolLayer
 
@@ -16,7 +16,7 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
             raise GovernanceError(f"Edit outside approved plan: {edit.path}")
         path = tools._resolve(edit.path)
         if edit.kind == "write" and path.exists():
-            raise GovernanceError(f"Use replace for existing file: {edit.path}")
+            raise FactoryError(f"Use replace for existing file: {edit.path}")
     for edit in proposal.edits:
         if edit.kind == "write":
             tools.write(edit.path, edit.content)
@@ -25,8 +25,6 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
     for command in proposal.commands:
         report = tools.run(command)
         if not report.passed:
-            from factory.errors import FactoryError
-
             raise FactoryError(report.output.strip() or "command failed")
     paths = []
     for edit in proposal.edits:

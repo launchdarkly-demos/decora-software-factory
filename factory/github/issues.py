@@ -79,6 +79,13 @@ def status_body(job_id: str, snapshot: dict) -> str:
                   "Answer from the factory terminal using the current pause ID:", "```bash",
                   f".venv/bin/python -m factory temporal answer {job_id} "
                   f"--pause-id {snapshot['pause_id']} --answer 'YOUR ANSWER'", "```"]
+        plan = job.get("plan") or {}
+        if plan.get("tasks"):
+            lines += ["", "Proposed work:"]
+            for task in plan["tasks"][:12]:
+                lines.append(f"- {task['id']}: {task['description'][:400]}")
+        if plan.get("migration_plan"):
+            lines += ["", "Migration/recovery: " + plan["migration_plan"][:1600]]
     if stage == "failed":
         lines += ["", "The job stopped. Inspect the local job logs before submitting a new issue."]
     pr = job.get("pr") or {}

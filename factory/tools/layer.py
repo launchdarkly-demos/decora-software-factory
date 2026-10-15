@@ -19,7 +19,7 @@ class ToolLayer:
         self.policy = policy
         self.target_repo = target_repo.resolve() if target_repo else None
 
-    def run(self, argv: list[str]) -> CommandReport:
+    def run(self, argv: list[str], *, output_limit: int = 20_000) -> CommandReport:
         self.policy.check_command(argv)
         try:
             proc = subprocess.run(
@@ -38,8 +38,8 @@ class ToolLayer:
             output = f"timed out after {self.policy.command_timeout_seconds}s\n{exc}"
             return CommandReport(argv=argv, exit_code=124, output=output, passed=False)
         output = (proc.stdout or "") + (proc.stderr or "")
-        if len(output) > 20_000:
-            output = output[-20_000:]
+        if len(output) > output_limit:
+            output = "[output truncated]\n" + output[-output_limit:]
         return CommandReport(
             argv=argv,
             exit_code=proc.returncode,
@@ -85,9 +85,12 @@ class ToolLayer:
         return result.output.strip()
 
     def diff(self, base_sha: str) -> str:
-        result = self.run(["git", "diff", base_sha, "HEAD"])
+        result = self.run(["git", "diff", "--no-ext-diff", "--no-textconv", base_sha, "HEAD"],
+                          output_limit=200_000)
         if not result.passed:
-            return ""
+            raise FactoryError("Cannot read the diff for verification and review")
+        if result.output.startswith("[output truncated]"):
+            raise FactoryError("Diff exceeds the 200,000-character review budget; split this change into smaller tasks")
         return result.output
 
     def changed_files(self, base_sha: str) -> list[str]:

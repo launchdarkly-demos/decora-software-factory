@@ -129,7 +129,7 @@ async def run_worker(client: Client, args: argparse.Namespace) -> None:
     def create_factory() -> Factory:
         return Factory(
             target_repo=repo, home=home, policy=policy,
-            harness=OpenAIAgentsHarness() if args.agents == "openai" else MockHarness(),
+            harness=OpenAIAgentsHarness(policy=policy) if args.agents == "openai" else MockHarness(),
             ld_mode=args.ld, keep_worktree=args.keep_worktree, push=args.push,
             execution=PortableWorkspace(args.workspace_root or home / "workspaces", home / "artifacts",
                                         base_ref=args.base_ref, base_branch=args.base_branch),

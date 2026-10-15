@@ -58,6 +58,16 @@ class RepoContext(BaseModel):
     snippets: list[Snippet]
     has_flags_module: bool
     has_capabilities_route: bool
+    file_inventory: list[str] = Field(default_factory=list)
+    verification_profiles: dict[str, dict] = Field(default_factory=dict)
+
+
+class PlanTask(BaseModel):
+    id: str
+    description: str
+    files: list[str]
+    depends_on: list[str] = Field(default_factory=list)
+    acceptance: list[str] = Field(default_factory=list)
 
 
 class ImplementationPlan(BaseModel):
@@ -72,6 +82,12 @@ class ImplementationPlan(BaseModel):
     questions: list[str]
     recipe: str
     context_files: list[str] = Field(default_factory=list)
+    tasks: list[PlanTask] = Field(default_factory=list)
+    verification_profiles: list[str] = Field(default_factory=list)
+    requires_migration: bool = False
+    migration_plan: str = ""
+    risks: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
 
 
 class FileEdit(BaseModel):

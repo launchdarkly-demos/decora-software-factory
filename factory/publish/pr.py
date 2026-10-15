@@ -107,6 +107,11 @@ def _flag_lines(job: JobState) -> list[str]:
 def render_pr(job: JobState, diff: str) -> str:
     plan = job.plan
     review = job.review
+    flag_key = job.feature.flag_key or (plan.flag_key if plan else None)
+    flag_section = (["- No feature flag required for this internal change."]
+                    if not job.feature.user_facing and not flag_key else [
+                        f"- Key: `{flag_key}`", "- Code default: off", *_flag_lines(job),
+                        "- A human turns the flag on in LaunchDarkly. This pull request does not."])
     lines = [
         f"# {job.feature.title}",
         "",
@@ -121,10 +126,7 @@ def render_pr(job: JobState, diff: str) -> str:
         "",
         "## Flag",
         "",
-        f"- Key: `{job.feature.flag_key or (plan.flag_key if plan else None)}`",
-        "- Code default: off",
-        *_flag_lines(job),
-        "- A human turns the flag on in LaunchDarkly. This pull request does not.",
+        *flag_section,
         "",
         "## Implementation plan",
         "",
@@ -132,6 +134,12 @@ def render_pr(job: JobState, diff: str) -> str:
     if plan:
         for step in plan.steps:
             lines.append(f"- {step}")
+        if plan.tasks:
+            lines.extend(["", "Planned tasks:"])
+            for task in plan.tasks:
+                lines.append(f"- {task.id}: {task.description} (depends on: {', '.join(task.depends_on) or 'none'})")
+        if plan.requires_migration:
+            lines.extend(["", "Migration and recovery:", "", plan.migration_plan])
         if plan.context_files:
             lines.append("")
             lines.append("Context files the planner saw:")

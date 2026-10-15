@@ -14,8 +14,11 @@ def _added_production_code(diff: str) -> str:
             if line.startswith("+++ "):
                 path = PurePosixPath(line[4:].removeprefix("b/"))
                 production = (
-                    path.suffix == ".py"
+                    path.suffix in {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
                     and "tests" not in path.parts
+                    and "__tests__" not in path.parts
+                    and ".test." not in path.name
+                    and ".spec." not in path.name
                     and not path.name.startswith("test_")
                     and not path.name.endswith("_test.py")
                 )
@@ -23,7 +26,7 @@ def _added_production_code(diff: str) -> str:
             if not production or not line.startswith("+") or line.startswith("+++"):
                 continue
             line = line[1:]
-        if not line.lstrip().startswith("#"):
+        if not line.lstrip().startswith(("#", "//", "/*", "*")):
             lines.append(line)
     return "\n".join(lines)
 
@@ -42,8 +45,10 @@ def audit_flag(diff: str, flag_key: str | None, *, must_default_off: bool) -> li
     if flag_key not in code:
         problems.append(f"diff does not contain LaunchDarkly flag {flag_key}")
     if must_default_off and (
-        not re.search(r"^\s*FLAG_DEFAULT\s*=\s*False\b", code, re.MULTILINE)
-        or re.search(r"^\s*FLAG_DEFAULT\s*=\s*True\b", code, re.MULTILINE)
+        not re.search(r"^\s*(?:export\s+)?(?:(?:const|let)\s+)?FLAG_DEFAULT\s*=\s*(?:False|false)\b",
+                      code, re.MULTILINE)
+        or re.search(r"^\s*(?:export\s+)?(?:(?:const|let)\s+)?FLAG_DEFAULT\s*=\s*(?:True|true)\b",
+                     code, re.MULTILINE)
     ):
         problems.append("FLAG_DEFAULT must be False")
     return problems

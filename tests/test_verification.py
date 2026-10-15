@@ -62,3 +62,28 @@ def _plan(targets: list[str]) -> ImplementationPlan:
         questions=[],
         recipe="flagged_capability_field",
     )
+
+
+def test_configured_frontend_checks_run_and_failures_block_shipping(tmp_path):
+    from factory.governance.policy import VerificationProfile
+    from factory.models import WorktreeInfo
+    repo = init_repo(tmp_path / 'frontend')
+    rules = policy()
+    rules.verification_profiles['ui'] = VerificationProfile(
+        description='Controlled test double for browser command execution', kind='browser', paths=['web/*'],
+        commands=[['pytest', '-q', 'test_browser_contract.py']])
+    tools = ToolLayer(repo, rules)
+    base = tools.head_sha()
+    tools.write('web/page.html', '<button>Choose home</button>')
+    tools.write('test_browser_contract.py', 'def test_contract():\n    assert False, "UI regression"\n')
+    tools.commit('UI change', ['web/page.html', 'test_browser_contract.py'])
+    job = bare_job(tmp_path, worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=base),
+                   plan=_plan([]))
+    failed = VerificationGate(repo, tmp_path / 'home').run(job, tools)
+    assert not failed.passed
+    assert any('test_browser_contract.py' in cmd.argv for cmd in failed.commands)
+    assert 'UI regression' in failed.actionable
+    rules.verification_profiles.clear()
+    blocked = VerificationGate(repo, tmp_path / 'home').run(job, tools)
+    assert not blocked.passed
+    assert 'browser verification profile' in blocked.actionable

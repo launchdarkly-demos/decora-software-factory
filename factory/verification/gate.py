@@ -7,6 +7,7 @@ from pathlib import Path
 from factory.governance.flags import audit_flag
 from factory.models import CommandReport, FailureClass, JobState, VerifyResult
 from factory.tools.layer import ToolLayer
+from factory.verification.profiles import prerequisites, selected_profiles
 
 
 class VerificationGate:
@@ -24,14 +25,32 @@ class VerificationGate:
             )
         diff = tools.diff(job.worktree.base_sha)
         flag_key = job.feature.flag_key or job.plan.flag_key
-        problems: list[str] = []
-        if job.feature.user_facing:
-            problems.extend(
-                audit_flag(diff, flag_key, must_default_off=True)
+        changed = tools.changed_files(job.worktree.base_sha)
+        problems: list[str] = prerequisites(tools.policy, job.plan, changed)
+        flag_problems: list[str] = []
+        if job.feature.user_facing and tools.policy.flags.required_for_user_facing:
+            flag_problems.extend(
+                audit_flag(diff, flag_key, must_default_off=tools.policy.flags.must_default_off)
             )
+        problems.extend(flag_problems)
         commands: list[CommandReport] = []
         commands.extend(self._pytest(job, tools))
         commands.extend(self._lint_and_types(job, tools))
+        for name in selected_profiles(tools.policy, job.plan, changed):
+            if name not in tools.policy.verification_profiles:
+                continue
+            for argv in tools.policy.verification_profiles[name].commands:
+                resolved = [_target_python(self.target_repo) if arg == '{python}' else arg for arg in argv]
+                commands.append(tools.run(resolved))
+        if not commands:
+            problems.append('No verification commands executed; configure a test or verification profile.')
+        profiles = selected_profiles(tools.policy, job.plan, changed)
+        has_behavior_checks = bool(job.plan.test_targets or tools.policy.regression_tests) or any(
+            tools.policy.verification_profiles[name].kind in {'test', 'browser', 'migration'}
+            for name in profiles if name in tools.policy.verification_profiles
+        )
+        if not has_behavior_checks:
+            problems.append('No behavioral test checks selected; static checks alone cannot approve a change.')
         failed = [item for item in commands if not item.passed]
         passed = not problems and not failed
         lines = list(problems)
@@ -43,7 +62,7 @@ class VerificationGate:
             lines.append("All executed verification commands passed; the flag audit passed.")
         classification: FailureClass = "none"
         if not passed:
-            if problems:
+            if flag_problems:
                 classification = "flag"
             elif any(Path(item.argv[0]).name == "pytest" or "pytest" in item.argv for item in failed):
                 classification = "test"
@@ -59,17 +78,12 @@ class VerificationGate:
     def _pytest(self, job: JobState, tools: ToolLayer) -> list[CommandReport]:
         assert job.plan is not None
         targets = list(dict.fromkeys([*job.plan.test_targets, *tools.policy.regression_tests]))
-        if (tools.worktree / "test_room_mood_api.py").exists() and "test_room_mood_api.py" not in targets:
-            targets.append("test_room_mood_api.py")
         if not targets:
-            return [
-                CommandReport(
-                    argv=["pytest"],
-                    exit_code=1,
-                    output="plan listed no tests",
-                    passed=False,
-                )
-            ]
+            return []
+        for target in targets:
+            if target.startswith('-'):
+                raise ValueError('pytest targets must be repository paths, not options')
+            tools._resolve(target.split('::')[0])
         ini = self.home / "runs" / job.id / "pytest-gate.ini"
         ini.parent.mkdir(parents=True, exist_ok=True)
         ini.write_text("[pytest]\naddopts =\n")
@@ -94,29 +108,13 @@ class VerificationGate:
         added = [line for line in added_report.output.splitlines() if line.endswith(".py")]
         py_changed = [path for path in changed if path.endswith(".py")]
         reports: list[CommandReport] = []
-        lint_targets = added or [path for path in py_changed if path == "app/room_mood.py"]
+        lint_targets = added
         if lint_targets:
             ruff = _bin("ruff")
             if ruff is None:
                 reports.append(_missing("ruff"))
             else:
                 reports.append(tools.run([*ruff, "check", "--isolated", "--select", "E,F", *lint_targets]))
-        if (tools.worktree / "app" / "room_mood.py").exists():
-            mypy = _bin("mypy")
-            if mypy is None:
-                reports.append(_missing("mypy"))
-            else:
-                reports.append(
-                    tools.run(
-                        [
-                            *mypy,
-                            "--follow-imports=silent",
-                            "--ignore-missing-imports",
-                            "--pretty",
-                            "app/room_mood.py",
-                        ]
-                    )
-                )
         if py_changed:
             python = _target_python(self.target_repo)
             reports.append(tools.run([python, "-m", "compileall", "-q", *py_changed]))

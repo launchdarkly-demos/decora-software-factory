@@ -333,6 +333,16 @@ updates a status comment with clarification instructions and the draft PR link.
 It uses the existing Temporal worker; it does not require a public webhook or a
 GitHub Actions runner. See [setup, commands, behavior, and remaining work](docs/github-issues.md).
 
-The issue bridge does not broaden the Planner's scope: arbitrary UI changes,
-refactors, and bug fixes still need the planning/context/verification improvements
-listed in that guide.
+The real Planner now supports broader request types. Actual UI and migration builds
+still require the target's browser/migration verification profiles; see the general
+planning guide below.
+
+## General planning and frontend work
+
+The real Planner supports general tasks and produces ordered subtasks, dependencies,
+risks, assumptions, and migration plans. Repository discovery includes frontend code;
+all three real agents can inspect source through bounded read-only tools. The Builder
+must stay within the approved file list, and verification runs maintainer-defined
+profiles in addition to Python checks. UI and migration work pause when their required
+profiles are missing. Use `factory plan` to preview an issue without building it.
+See [commands, verification configuration, and limits](docs/general-planning.md).

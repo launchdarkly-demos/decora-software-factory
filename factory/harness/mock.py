@@ -16,7 +16,8 @@ class MockHarness:
         if _concrete(job):
             plan = ImplementationPlan(
                 summary=feature.summary,
-                files=["app/flags.py", "app/room_mood.py", "server.py", "test_room_mood_flag.py"],
+                files=["app/flags.py", "app/room_mood.py", "server.py", "test_room_mood_flag.py",
+                       "test_room_mood_api.py"],
                 steps=[
                     "Add ROOM_MOOD_FLAG beside the existing flag constants.",
                     "Add app/room_mood.py with FLAG_DEFAULT False.",
@@ -51,6 +52,12 @@ class MockHarness:
 
     def build(self, job: JobState, tools: ToolLayer):
         proposal = room_mood_proposal(job, tools)
+        for edit in proposal.edits:
+            if edit.kind == "write" and tools._resolve(edit.path).exists():
+                edit.kind = "replace"
+                edit.old = tools.read(edit.path)
+                edit.new = edit.content
+                edit.content = ""
         result = apply_proposal(job, tools, proposal)
         charge(job, proposal.model_dump_json(), result.model_dump_json())
         return result

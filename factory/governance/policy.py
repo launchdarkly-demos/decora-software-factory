@@ -31,6 +31,13 @@ class LaunchDarklyRules(BaseModel):
     production_environment: str = "production"
 
 
+class VerificationProfile(BaseModel):
+    description: str
+    kind: str = "test"
+    paths: list[str] = Field(default_factory=list)
+    commands: list[list[str]] = Field(min_length=1)
+
+
 class Policy(BaseModel):
     version: int = 1
     max_retries: dict[str, int] = Field(
@@ -38,6 +45,8 @@ class Policy(BaseModel):
     )
     stage_timeout_seconds: dict[str, float] = Field(default_factory=dict)
     regression_tests: list[str] = Field(default_factory=list)
+    verification_profiles: dict[str, VerificationProfile] = Field(default_factory=dict)
+    require_browser_for_frontend: bool = True
     command_environment: dict[str, str] = Field(default_factory=dict)
     command_timeout_seconds: float = 180
     allow_commands: list[str] = Field(
@@ -99,21 +108,24 @@ def load_policy(path: Path) -> Policy:
 
 
 def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Decision:
+    from factory.verification.profiles import prerequisites, task_problems
+
     if policy.approvals.pause_on_ambiguous and not job.feature.acceptance and not job.human_answers:
         return Decision(
             pause=True,
             reason="What behavior and acceptance checks should this change implement, and which flag should gate it?",
             resume_stage="plan",
         )
+    blockers = task_problems(plan) + prerequisites(policy, plan, plan.files)
+    if job.context and job.context.file_inventory:
+        missing = set(plan.context_files) - set(job.context.file_inventory)
+        if missing:
+            blockers.append("Plan cites context files absent from the repository: " + ", ".join(sorted(missing)))
+    if blockers:
+        return Decision(pause=True, reason=" ".join(blockers), resume_stage="plan")
     if plan.ambiguous and policy.approvals.pause_on_ambiguous:
         question = plan.questions[0] if plan.questions else "The plan is ambiguous."
         return Decision(pause=True, reason=question, resume_stage="plan")
-    if plan.risk in policy.approvals.pause_on_risk:
-        return Decision(
-            pause=True,
-            reason=f"Risk {plan.risk} needs a human before any code is written.",
-            resume_stage="build",
-        )
     if (
         job.feature.user_facing
         and policy.flags.required_for_user_facing
@@ -129,6 +141,14 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
             pause=True,
             reason="The plan turns the flag on by default. Policy requires the code default off.",
             resume_stage="plan",
+        )
+    if (plan.requires_migration or plan.risk in policy.approvals.pause_on_risk
+            or plan.risk not in policy.approvals.auto_approve_risk):
+        return Decision(
+            pause=True,
+            reason=f"Risk {plan.risk} or data migration needs human review of the saved implementation plan. "
+                   "Reply 'approve' to build; other feedback goes back to planning.",
+            resume_stage="build",
         )
     return Decision(allowed=True, reason="plan is inside the auto-approve boundary")
 

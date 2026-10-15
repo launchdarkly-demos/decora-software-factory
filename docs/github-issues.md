@@ -80,9 +80,9 @@ multi-host distributed lock implementation.
 | Area | Current behavior | Remaining work |
 | --- | --- | --- |
 | Issue intake | Maintainer label, deduplicated Temporal submission, status/PR comment | GitHub-based clarification, explicit rerun/cancel controls, PR-review feedback loop |
-| Planning | Real SDK Planner; flag-controlled capability fields supported | General bug fixes, UI work, refactors, migrations and multi-step features; remove narrow recipe restriction |
-| Context | Small Python-focused excerpts | Frontend files (currently `web/` is skipped), larger repo navigation, dynamic file/tool exploration |
-| Verification | Selected pytest regressions, new Python lint, selected type checks, compile and flag audit | Task-specific required checks, browser/UI testing, full CI/coverage policy and stronger behavioral flag checks |
+| Planning | General SDK Planner with ordered tasks, dependencies, migration plans and read-only tools | Independently scheduled sub-jobs/PRs; broader end-to-end acceptance cases |
+| Context | Frontend/backend discovery and bounded file/search tools | Larger-repository scaling and richer semantic navigation |
+| Verification | Required profiles, selected pytest regressions, new Python lint, compile and flag audit | Provision Decora browser/migration suites; required CI and broader coverage |
 | Isolation | Independent clone, path/command policy; shared host and target virtualenv | Per-job sandbox/container with constrained credentials, filesystem, network and resources; command allowlists are not a security sandbox |
 | Publishing | Draft PR, stable branch reconciliation, issue link | Required CI/branch protection, preview deployments, revision loop for reviewer comments |
 | Durability | Local Temporal database, receipts and Git bundles | Supervised startup/restarts, backups and tested restore, alerts; production Temporal configuration |

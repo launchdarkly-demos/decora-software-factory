@@ -122,3 +122,13 @@ def test_missing_acceptance_cannot_be_invented_by_planner(tmp_path):
     decision = review_plan(policy(), low_plan(), job)
     assert decision.pause
     assert decision.resume_stage == "plan"
+
+
+def test_frontend_flag_audit_checks_production_default():
+    diff = '''diff --git a/web/flags.ts b/web/flags.ts
++++ b/web/flags.ts
++export const FLAG_DEFAULT = false;
++const FLAG_KEY = "decor-example";
+'''
+    assert audit_flag(diff, 'decor-example', must_default_off=True) == []
+    assert audit_flag(diff.replace('= false', '= true'), 'decor-example', must_default_off=True)

@@ -102,12 +102,13 @@ key: not-a-real-flag
     assert result.user_facing is True
     assert result.flag_key is None
     assert 'server.py' in result.hints[0]
-    # A requested rollout exception must not silently disable existing policy.
+    # A small user-facing bug fix can proceed without a flag.
     from factory.governance.policy import review_plan
     from tests.support import bare_job, low_plan, policy
     plan = low_plan().model_copy(update={'flag_key': None})
     job = bare_job(ROOT, feature=result)
-    assert review_plan(policy(), plan, job).pause
+    assert review_plan(policy(), plan, job).allowed
+    assert review_plan(policy(), plan.model_copy(update={"risk": "high"}), job).pause
 
 
 def test_unfilled_template_cannot_invent_acceptance_or_a_flag():

@@ -132,3 +132,38 @@ def test_frontend_flag_audit_checks_production_default():
 '''
     assert audit_flag(diff, 'decor-example', must_default_off=True) == []
     assert audit_flag(diff.replace('= false', '= true'), 'decor-example', must_default_off=True)
+
+
+@pytest.mark.parametrize("assessment", [
+    {}, {"risk": "medium"}, {"risk": "high"},
+    {"large_change": True}, {"important_ux_change": True},
+])
+def test_rollout_depends_on_impact_not_user_facing(tmp_path, assessment):
+    from factory.governance.policy import flag_required, review_plan, review_ship
+    from factory.launchdarkly.flags import LaunchDarklyService
+    from tests.support import bare_job, low_plan
+
+    job = bare_job(tmp_path, feature=feature(user_facing=True))
+    job.plan = low_plan(flag_key=None, **assessment)
+    required = bool(assessment)
+    assert flag_required(policy(), job) is required
+    decision = review_plan(policy(), job.plan, job)
+    assert decision.allowed is (not required)
+    assert review_ship(policy(), job, "small copy fix").retry_build is required
+    if required:
+        from factory.errors import FactoryError
+        with pytest.raises(FactoryError, match="no key"):
+            LaunchDarklyService(mode="live", policy=policy(), target_repo=tmp_path).ensure(job)
+    else:
+        record = LaunchDarklyService(mode="live", policy=policy(), target_repo=tmp_path,
+                                  environ={}).ensure(job)
+        assert not record.required
+
+
+def test_explicit_internal_flag_still_requires_assurance(tmp_path):
+    from factory.governance.policy import flag_required
+    from tests.support import bare_job, low_plan
+
+    job = bare_job(tmp_path, feature=feature(user_facing=False, flag_key="internal-rollout"))
+    job.plan = low_plan(flag_key="internal-rollout")
+    assert flag_required(policy(), job)

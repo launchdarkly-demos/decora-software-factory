@@ -101,7 +101,9 @@ file-discovery hints. Markdown checkboxes are accepted and instructional HTML
 comments are ignored. Existing Summary/Acceptance/Flag/Hints issues still work.
 
 A blank template has no acceptance criteria and therefore pauses. Choosing
-`feature flag: no` records a request, not a policy override: user-facing work still
-requires a default-off flag under the current policy. `user-facing: unsure` is
+`feature flag: no` records rollout intent. User-facing alone does not require a flag.
+Policy requires default-off flags for medium/high-risk changes, large changes,
+important UX changes, or an explicitly supplied flag key. The Planner records its
+assessment and rationale; a no-flag request cannot override those risk rules. `user-facing: unsure` is
 conservatively treated as user-facing. This format supports proposing broader
 work without claiming the current Planner can automatically implement it.

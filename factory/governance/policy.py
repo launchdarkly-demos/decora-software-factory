@@ -16,7 +16,10 @@ class ApprovalRules(BaseModel):
 
 
 class FlagRules(BaseModel):
-    required_for_user_facing: bool = True
+    required_for_user_facing: bool = False
+    required_for_risk: list[str] = Field(default_factory=lambda: ["medium", "high"])
+    required_for_large_changes: bool = True
+    required_for_important_ux: bool = True
     must_default_off: bool = True
 
 
@@ -107,13 +110,28 @@ def load_policy(path: Path) -> Policy:
     return Policy.model_validate(data)
 
 
+def flag_required(policy: Policy, job: JobState, plan: ImplementationPlan | None = None) -> bool:
+    """One rollout decision shared by planning, verification, provisioning and shipping."""
+    plan = plan or job.plan
+    return bool(
+        job.feature.flag_key
+        or (job.feature.user_facing and policy.flags.required_for_user_facing)
+        or (plan and (
+            plan.flag_key
+            or plan.risk in policy.flags.required_for_risk
+            or (plan.large_change and policy.flags.required_for_large_changes)
+            or (plan.important_ux_change and policy.flags.required_for_important_ux)
+        ))
+    )
+
+
 def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Decision:
     from factory.verification.profiles import prerequisites, task_problems
 
     if policy.approvals.pause_on_ambiguous and not job.feature.acceptance and not job.human_answers:
         return Decision(
             pause=True,
-            reason="What behavior and acceptance checks should this change implement, and which flag should gate it?",
+            reason="What behavior and acceptance checks should this change implement?",
             resume_stage="plan",
         )
     blockers = task_problems(plan) + prerequisites(policy, plan, plan.files)
@@ -127,16 +145,16 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
         question = plan.questions[0] if plan.questions else "The plan is ambiguous."
         return Decision(pause=True, reason=question, resume_stage="plan")
     if (
-        job.feature.user_facing
-        and policy.flags.required_for_user_facing
-        and not plan.flag_key
+        flag_required(policy, job, plan)
+        and not (job.feature.flag_key or plan.flag_key)
     ):
         return Decision(
             pause=True,
-            reason="User-facing work needs a LaunchDarkly flag key that defaults off.",
+            reason="This change needs a default-off LaunchDarkly flag because of its risk, scope, "
+                   "UX impact, or explicit rollout request.",
             resume_stage="plan",
         )
-    if job.feature.user_facing and policy.flags.must_default_off and plan.flag_default is True:
+    if flag_required(policy, job, plan) and policy.flags.must_default_off and plan.flag_default is True:
         return Decision(
             pause=True,
             reason="The plan turns the flag on by default. Policy requires the code default off.",
@@ -156,7 +174,7 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
 def review_ship(policy: Policy, job: JobState, diff: str) -> Decision:
     from factory.governance.flags import audit_flag
 
-    if job.feature.user_facing and policy.flags.required_for_user_facing:
+    if flag_required(policy, job):
         flag_key = job.feature.flag_key or (job.plan.flag_key if job.plan else None)
         problems = audit_flag(diff, flag_key, must_default_off=policy.flags.must_default_off)
         if problems:

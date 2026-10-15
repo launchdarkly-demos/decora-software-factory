@@ -84,6 +84,9 @@ class ImplementationPlan(BaseModel):
     context_files: list[str] = Field(default_factory=list)
     tasks: list[PlanTask] = Field(default_factory=list)
     verification_profiles: list[str] = Field(default_factory=list)
+    large_change: bool = False
+    important_ux_change: bool = False
+    flag_rationale: str = ""
     requires_migration: bool = False
     migration_plan: str = ""
     risks: list[str] = Field(default_factory=list)

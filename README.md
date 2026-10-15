@@ -132,7 +132,7 @@ Artifacts for a run:
 
 ## LaunchDarkly
 
-Every new user-facing behavior is wrapped in a flag whose code default is off. The verifier and the ship gate both read the diff. A builder summary that claims the flag exists is not evidence.
+Flags are required for medium/high-risk changes, large capabilities, significant changes to core user flows, and explicitly requested flags. Small user-facing fixes and polish do not automatically need a flag. The Planner records its rollout rationale; flags that are used default off. The verifier and the ship gate both read the diff. A builder summary that claims the flag exists is not evidence.
 
 When a token is available, passing verification is not enough to reach the reviewer. The factory calls the LaunchDarkly REST API and:
 

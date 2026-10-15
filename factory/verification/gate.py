@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from factory.governance.flags import audit_flag
+from factory.governance.policy import flag_required
 from factory.models import CommandReport, FailureClass, JobState, VerifyResult
 from factory.tools.layer import ToolLayer
 from factory.verification.profiles import prerequisites, selected_profiles
@@ -28,7 +29,7 @@ class VerificationGate:
         changed = tools.changed_files(job.worktree.base_sha)
         problems: list[str] = prerequisites(tools.policy, job.plan, changed)
         flag_problems: list[str] = []
-        if job.feature.user_facing and tools.policy.flags.required_for_user_facing:
+        if flag_required(tools.policy, job):
             flag_problems.extend(
                 audit_flag(diff, flag_key, must_default_off=tools.policy.flags.must_default_off)
             )

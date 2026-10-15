@@ -34,12 +34,12 @@ def _added_production_code(diff: str) -> str:
 def audit_flag(diff: str, flag_key: str | None, *, must_default_off: bool) -> list[str]:
     """Deterministic LaunchDarkly check over the real diff.
 
-    The builder's summary is not an input. A user-facing change needs the flag
+    The builder's summary is not an input. A change requiring a rollout flag needs the flag
     key in the diff and a code default of off.
     """
     problems: list[str] = []
     if not flag_key:
-        problems.append("user-facing change has no LaunchDarkly flag key")
+        problems.append("change requiring a flag has no LaunchDarkly flag key")
         return problems
     code = _added_production_code(diff)
     if flag_key not in code:

@@ -108,8 +108,8 @@ def render_pr(job: JobState, diff: str) -> str:
     plan = job.plan
     review = job.review
     flag_key = job.feature.flag_key or (plan.flag_key if plan else None)
-    flag_section = (["- No feature flag required for this internal change."]
-                    if not job.feature.user_facing and not flag_key else [
+    flag_section = (["- No feature flag required for this change."]
+                    if not flag_key else [
                         f"- Key: `{flag_key}`", "- Code default: off", *_flag_lines(job),
                         "- A human turns the flag on in LaunchDarkly. This pull request does not."])
     lines = [
@@ -127,6 +127,7 @@ def render_pr(job: JobState, diff: str) -> str:
         "## Flag",
         "",
         *flag_section,
+        *([f"- Rollout rationale: {plan.flag_rationale}"] if plan and plan.flag_rationale else []),
         "",
         "## Implementation plan",
         "",

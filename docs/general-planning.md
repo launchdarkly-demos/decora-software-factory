@@ -98,3 +98,20 @@ still a convention check; behavioral flag tests and review remain necessary.
   automatic PR-feedback handling, and service supervision remain separate work.
 
 Read-only function tools follow the [official OpenAI tool guide](https://developers.openai.com/api/docs/guides/tools).
+
+## Flag decisions
+
+Being user-facing does not by itself require a flag. The default policy requires
+one for medium/high-risk changes, large changes, material changes to core UX,
+or an explicit flag key. The Planner records `large_change`, `important_ux_change`
+and `flag_rationale`; the Reviewer checks this assessment against the diff.
+Small fixes, copy, routine visual polish, tests and documentation can ship without
+introducing a flag. All changes still pass verification and review.
+
+The `flags` section in policy.yaml and policy.decora.yaml controls these rules.
+`required_for_user_facing` remains available for installations that deliberately
+want the stricter old behavior, but defaults to false. Required flags still default
+off and are checked in LaunchDarkly before review; changes without a flag skip that
+API step. A feature flag is not a substitute for migration safety.
+Restart long-running workers after changing code or policy; existing saved plans
+retain their explicit flag keys and are not automatically reclassified.

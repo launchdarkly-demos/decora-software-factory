@@ -36,8 +36,8 @@ and include screenshots/mockups if helpful. Write "unsure" if you need help. -->
 <!-- This is a rollout decision, not the definition of the task.
 Use yes/no/unsure for user-facing and feature flag. If a flag is needed, supply
 its key when known and keep default off. Explain why no flag is appropriate when
-choosing no. Current policy still requires flags for user-facing changes; an
-exception needs human review. The factory does not merge, deploy, or enable flags. -->
+choosing no. Flags are required for large or risky changes and material changes
+to core user flows; small fixes and polish need not have one. The factory does not merge, deploy, or enable flags. -->
 user-facing: unsure
 feature flag: unsure
 key:

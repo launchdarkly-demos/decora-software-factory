@@ -3,7 +3,7 @@ import json
 import pytest
 
 from factory.context.repo import RepositoryReader, analyze_repo
-from factory.errors import GovernanceError
+from factory.errors import FactoryError, GovernanceError
 from factory.governance.policy import VerificationProfile, review_plan
 from factory.models import BuildProposal, FileEdit, PlanTask, WorktreeInfo
 from factory.verification.profiles import prerequisites, task_problems
@@ -83,7 +83,7 @@ def test_unlisted_file_or_existing_write_rejected_before_any_edit(tmp_path):
         apply_proposal(job, tools, proposal)
     assert not (repo / 'allowed.py').exists()
     proposal.edits[-1] = FileEdit(path='server.py', kind='write', content='overwrite')
-    with pytest.raises(GovernanceError, match='Use replace'):
+    with pytest.raises(FactoryError, match='Use replace'):
         apply_proposal(job, tools, proposal)
     assert not (repo / 'allowed.py').exists()
 

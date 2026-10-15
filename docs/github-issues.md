@@ -52,15 +52,15 @@ Temporal address/namespace options as the other commands.
 
 ## Submit and review
 
-1. Open a GitHub issue using **Factory task**. Specify the summary, acceptance tests,
-   default-off flag, whether it is user-facing, and useful file/test hints.
+1. Open a GitHub issue using **Decora factory request**. Describe the goal, acceptance
+   criteria, scope, verification and rollout needs. A flag is optional for small changes.
 2. A maintainer adds `factory:ready`. This authorizes model calls and, for a worker
    started with `--push`, a draft PR. The issue must still be open at intake.
 3. The bridge creates one `job-gh-<GitHub issue ID>` workflow. A single status comment
    is updated as stages change and eventually links to the draft PR.
 4. If clarification is needed, the comment supplies the `temporal answer` command
    and current pause ID. Answers currently come from the trusted local CLI, not comments.
-5. Review/test the PR, merge manually, then decide when to enable the flag. The factory
+5. Review/test the PR, merge manually, then decide when to enable any flag. The factory
    does not merge or enable flags.
 
 Removing the label or closing the issue stops new intake but **does not cancel a job
@@ -107,3 +107,23 @@ important UX changes, or an explicitly supplied flag key. The Planner records it
 assessment and rationale; a no-flag request cannot override those risk rules. `user-facing: unsure` is
 conservatively treated as user-facing. This format supports proposing broader
 work without claiming the current Planner can automatically implement it.
+
+## Demo: request to reviewed pull request
+
+A feature request describes a desired product improvement. A GitHub issue is the
+tracked record containing that request (or a bug report or maintenance task).
+The factory parses the issue into its internal `FeatureRequest` model; there is
+no separate feature-request submission to create.
+
+For a live demo, create one small, supported request using **Decora factory request**
+in the repository watched by the issue bridge. Show the acceptance criteria, then
+apply `factory:ready` after maintainer review. Follow the workflow status through
+verification and the resulting draft PR. Rehearse with the configured verification
+profiles before going live. The multiple-home-projects request remains a larger
+follow-up until browser and migration verification are configured.
+
+Generated PRs include a short **Rollout** note: no flag needed, or the flag key,
+code default, link when available, and a separate human release decision. Offline
+LaunchDarkly checks are disclosed. Detailed create/reuse and environment verification
+records stay in the run's `launchdarkly.json` artifact. Guarded rollouts are not a
+required factory stage.

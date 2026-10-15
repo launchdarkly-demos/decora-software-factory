@@ -267,7 +267,9 @@ def test_auto_without_a_token_skips_and_the_pr_says_so(tmp_path: Path) -> None:
     job.launchdarkly = record.model_copy(update={"mode": "live", "url": FLAG_URL, "created": True})
     live_body = render_pr(job, "")
     assert FLAG_URL in live_body
-    assert "Created in LaunchDarkly" in live_body
+    assert "## Rollout" in live_body
+    assert "Created in LaunchDarkly" not in live_body
+    assert "separate human release decision" in live_body
 
 
 def test_offline_mode_does_not_call_launchdarkly(tmp_path: Path) -> None:

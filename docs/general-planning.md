@@ -169,3 +169,10 @@ whole-file writes over existing files. It simulates the entire sequence of edits
 before writing any file, so a bad later anchor does not leave earlier edits applied.
 This preflight protects against validation failures; it is not a filesystem transaction
 for disk errors or a rollback of commands run after successful edits.
+
+After applying a proposal, the factory formats its edited Python files with the
+worker's Ruff formatter before running proposal commands and committing. Formatting
+uses isolated defaults and stays inside the approved edit scope. This prevents
+fixable layout errors from consuming model repair attempts. Formatting failures
+block the build; the normal lint and behavioral verification gates still run,
+since formatting alone cannot fix every lint error or establish correctness.

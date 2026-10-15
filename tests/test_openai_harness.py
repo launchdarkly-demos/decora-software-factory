@@ -180,3 +180,25 @@ def test_preview_marker_is_rejected_before_any_edit(tmp_path):
     with pytest.raises(FactoryError, match='preview markers are not source code'):
         apply_proposal(job, tools, proposal)
     assert not (repo / 'new.py').exists()
+
+
+def test_builder_formats_generated_python_before_commit_and_verification(tmp_path):
+    from factory.agents.apply import apply_proposal
+    from factory.models import BuildProposal, FileEdit
+    from factory.tools.layer import ToolLayer
+    from tests.support import init_repo, low_plan, policy
+
+    repo = init_repo(tmp_path / 'repo')
+    tools = ToolLayer(repo, policy())
+    job = bare_job(tmp_path, plan=low_plan(files=['test_generated.py']),
+                   worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
+    code = ('def test_registry():\n'
+            '    home = {"home_id": "first-home", "display_name": "A long home name", '
+            '"metadata": "Some descriptive home metadata for a test"}; assert home["home_id"]\n')
+    result = apply_proposal(job, tools, BuildProposal(
+        summary='Add registry test', commit_message='Add registry test',
+        edits=[FileEdit(path='test_generated.py', kind='write', content=code)]))
+    assert result.commit == tools.head_sha()
+    assert tools.run(['ruff', 'check', '--isolated', '--select', 'E,F', 'test_generated.py']).passed
+    assert tools.run(['pytest', '-q', 'test_generated.py']).passed
+    assert tools.run(['git', 'status', '--porcelain', '--untracked-files=no']).output.strip() == ''

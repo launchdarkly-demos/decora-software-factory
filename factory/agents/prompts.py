@@ -28,14 +28,12 @@ Rules:
   as a prerequisite in risks, do not claim tests exist or invent profile names.
 - test_targets names Python pytest targets only; use profiles for JS/TS/build/browser checks.
   Prefer whole test-file paths over invented test class or function selectors.
-- Assess rollout needs for every plan: set large_change for broad/new capabilities and
-  important_ux_change for material changes to core user flows (styling, projects, purchases).
-  Set flag_rationale to explain why a flag is or is not needed. User-facing alone does not
-  require a flag: small bug fixes, copy, styling polish, tests and docs usually need none.
-  Default policy requires flags for medium/high risk, large changes, important UX changes,
-  or an explicitly supplied flag key. Honor the request's rollout intent when consistent
-  with policy. Never invent a key when a product decision is needed; ask for it.
-  A flag cannot undo a data migration; still plan migration safety and human review.
+- Feature flags and guarded rollout are deferred when flag_policy.enabled is false.
+  In that mode, set flag_key=null and do not add flags, flag-specific acceptance tests,
+  LaunchDarkly provisioning, or rollout prerequisites, even if an older request or plan
+  mentions them. Preserve existing application flags and their current behavior.
+  Risk classification and migration safety still apply independently of flags.
+  If flag_policy.enabled is true, follow its configured rules and request rollout intent.
 - Do not invent SKUs, prices, brands, or read/edit app/pim/. Preserve human approval before spending.
 - If acceptance or a product decision is missing, set ambiguous=true and ask a concrete question.
   Infrastructure prerequisites belong in risks; ask for product choices only when needed.
@@ -62,9 +60,9 @@ Rules:
 - kind=write is only for NEW files. For existing files use short, unique, verbatim replace
   anchors. For replace fill old/new and leave content empty; for write fill content only.
 - Read exact source with read_file before replacing it; excerpts can omit relevant lines.
-- When the approved plan requires a flag, implement that default-off flag. Use FLAG_DEFAULT = False in
-  Python or const FLAG_DEFAULT = false in JS/TS, and pass it to the evaluator.
-  Changes without a flag do not need a fabricated FLAG_DEFAULT constant.
+- When flag_policy.enabled is false, do not introduce feature flags or guarded rollout.
+  Older plan/request flag instructions are deferred by this maintainer setting. Preserve
+  existing application flags; continue implementing functional acceptance tests.
 - Preserve existing APIs and data unless the plan explicitly changes them. Implement any
   migration idempotently, with fixtures proving old data survives and failure is recoverable.
 - Preserve human spending approval and catalog accuracy. Never read/write .env or app/pim/.
@@ -81,8 +79,8 @@ Inspect the actual diff and use read-only repository tools to check surrounding 
 Return your own ReviewReport verdict, evidence-backed findings, risks, and summary.
 Check every acceptance criterion and plan task, including UI/API integration, isolation,
 backward compatibility, migration behavior, default-off flags when required, and real tests.
-Check the rollout rationale against the actual diff; request changes for understated risk,
-large scope or core UX impact that should require a flag. Small user-facing fixes need none.
+When flag_policy.enabled is false, missing new flags or guarded rollout are not findings.
+Preserve checks for functional behavior, existing flags, data safety and acceptance criteria.
 Never approve failing or missing required verification, or claim a browser check ran without evidence.
 The verification object is the latest run against this diff; previous failures are history.
 Use needs_human when evidence is insufficient. An explicitly offline LaunchDarkly check is

@@ -102,20 +102,17 @@ Read-only function tools follow the [official OpenAI tool guide](https://develop
 
 ## Flag decisions
 
-Being user-facing does not by itself require a flag. The default policy requires
-one for medium/high-risk changes, large changes, material changes to core UX,
-or an explicit flag key. The Planner records `large_change`, `important_ux_change`
-and `flag_rationale`; the Reviewer checks this assessment against the diff.
-Small fixes, copy, routine visual polish, tests and documentation can ship without
-introducing a flag. All changes still pass verification and review.
+Feature flags and guarded rollout are deferred. Both shipped policies set
+`flags.enabled: false`, which overrides all automatic rules and stored flag keys.
+Planning, building and review receive this policy; flag audits and LaunchDarkly
+provisioning are skipped, even with `--ld live`. No LaunchDarkly token is needed.
+Existing application flags must be preserved. Tests, migration recovery and human
+risk approval remain mandatory. The integration code remains available for a later
+explicit re-enablement; it is not active in the current factory workflow.
 
-The `flags` section in policy.yaml and policy.decora.yaml controls these rules.
-`required_for_user_facing` remains available for installations that deliberately
-want the stricter old behavior, but defaults to false. Required flags still default
-off and are checked in LaunchDarkly before review; changes without a flag skip that
-API step. A feature flag is not a substitute for migration safety.
-Restart long-running workers after changing code or policy; existing saved plans
-retain their explicit flag keys and are not automatically reclassified.
+Restart workers after updating policy. A paused flag-key request needs one replan
+answer with its current pause ID; a valid medium/high-risk plan may then pause for
+risk approval. These are distinct decisions.
 
 ## Decora home-project verification contract
 

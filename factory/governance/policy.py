@@ -16,6 +16,7 @@ class ApprovalRules(BaseModel):
 
 
 class FlagRules(BaseModel):
+    enabled: bool = False
     required_for_user_facing: bool = False
     required_for_risk: list[str] = Field(default_factory=lambda: ["medium", "high"])
     required_for_large_changes: bool = True
@@ -113,6 +114,8 @@ def load_policy(path: Path) -> Policy:
 
 def flag_required(policy: Policy, job: JobState, plan: ImplementationPlan | None = None) -> bool:
     """One rollout decision shared by planning, verification, provisioning and shipping."""
+    if not policy.flags.enabled:
+        return False
     plan = plan or job.plan
     return bool(
         job.feature.flag_key

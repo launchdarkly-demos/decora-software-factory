@@ -167,3 +167,32 @@ def test_explicit_internal_flag_still_requires_assurance(tmp_path):
     job = bare_job(tmp_path, feature=feature(user_facing=False, flag_key="internal-rollout"))
     job.plan = low_plan(flag_key="internal-rollout")
     assert flag_required(policy(), job)
+
+
+@pytest.mark.parametrize('policy_name', ['policy.yaml', 'policy.decora.yaml'])
+@pytest.mark.parametrize('risk', ['low', 'medium', 'high'])
+def test_disabled_flags_never_block_or_call_launchdarkly(tmp_path, policy_name, risk):
+    from factory.governance.policy import flag_required, load_policy, review_plan, review_ship
+    from factory.launchdarkly.flags import LaunchDarklyService
+    from factory.publish.pr import render_pr
+    from tests.support import ROOT, bare_job, low_plan
+
+    rules = load_policy(ROOT / policy_name)
+    job = bare_job(tmp_path, feature=feature(flag_key='stale-request-key', user_facing=True))
+    job.plan = low_plan(risk=risk, large_change=True, important_ux_change=True, flag_default=True)
+    assert not flag_required(rules, job)
+    decision = review_plan(rules, job.plan, job)
+    assert decision.allowed if risk == 'low' else decision.pause and decision.resume_stage == 'build'
+    assert review_ship(rules, job, 'no flag implementation').allowed
+
+    class NoCalls:
+        def request(self, *args, **kwargs):
+            raise AssertionError('LaunchDarkly must not be contacted')
+
+    job.launchdarkly = LaunchDarklyService(mode='live', policy=rules, target_repo=tmp_path,
+                                         client=NoCalls(), environ={}).ensure(job)
+    assert not job.launchdarkly.required
+    assert not job.launchdarkly.blocks_review()
+    body = render_pr(job, '')
+    assert 'stale-request-key' not in body
+    assert 'Behind `' not in body

@@ -43,6 +43,7 @@ class OpenAIAgentsHarness:
                 "feature": _feature_for_model(job),
                 "context": context.model_dump(),
                 "answers": job.human_answers,
+                "flag_policy": self.policy.flags.model_dump(),
                 "plan_validation_feedback": job.govern_feedback,
                 "previous_plan": job.plan.model_dump() if job.plan else None,
             }
@@ -77,6 +78,7 @@ class OpenAIAgentsHarness:
                 "govern_feedback": job.govern_feedback,
                 "review_feedback": job.review.model_dump() if job.review else None,
                 "human_answers": job.human_answers,
+                "flag_policy": self.policy.flags.model_dump(),
             }
         )
         from agents import ModelSettings
@@ -113,6 +115,7 @@ class OpenAIAgentsHarness:
             "verification": latest.model_dump() if latest else None,
             "previous_failed_attempts": sum(not run.passed for run in job.verify_runs[:-1]),
             "launchdarkly": job.launchdarkly.model_dump() if job.launchdarkly else None,
+            "flag_policy": self.policy.flags.model_dump(),
         })
         agent = Agent(
             name="Reviewer",

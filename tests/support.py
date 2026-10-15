@@ -22,7 +22,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def policy() -> Policy:
-    return load_policy(ROOT / "policy.yaml")
+    rules = load_policy(ROOT / "policy.yaml")
+    # Existing flag-mode tests exercise the retained opt-in integration explicitly.
+    rules.flags.enabled = True
+    rules.flags.required_for_risk = ["medium", "high"]
+    rules.flags.required_for_large_changes = True
+    rules.flags.required_for_important_ux = True
+    return rules
 
 
 def init_repo(path: Path, *, capabilities: bool = True) -> Path:

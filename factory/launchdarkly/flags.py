@@ -59,7 +59,8 @@ class LaunchDarklyService:
                 required=False,
                 key=key,
                 project_key=rules.project_key,
-                detail="no LaunchDarkly flag required for this change",
+                detail=("Feature flags and guarded rollout deferred by policy."
+                        if not self.policy.flags.enabled else "no LaunchDarkly flag required for this change"),
             )
         if not key:
             raise FactoryError("Required rollout flag has no key; return to planning.")

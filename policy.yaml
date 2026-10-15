@@ -69,10 +69,11 @@ approvals:
     - high
 
 flags:
+  enabled: false  # Deferred: no flag audits, provisioning, or rollout gates.
   required_for_user_facing: false
-  required_for_risk: [medium, high]
-  required_for_large_changes: true
-  required_for_important_ux: true
+  required_for_risk: []
+  required_for_large_changes: false
+  required_for_important_ux: false
   must_default_off: true
 
 launchdarkly:

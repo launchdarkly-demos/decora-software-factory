@@ -103,6 +103,8 @@ def render_pr(job: JobState, diff: str) -> str:
     plan = job.plan
     review = job.review
     flag_key = job.feature.flag_key or (plan.flag_key if plan else None)
+    if job.launchdarkly is not None and not job.launchdarkly.required:
+        flag_key = None
     flag_section = (["- No feature flag required for this change."]
                     if not flag_key else [
                         f"- Behind `{flag_key}`; code default: "
@@ -124,7 +126,7 @@ def render_pr(job: JobState, diff: str) -> str:
         "## Rollout",
         "",
         *flag_section,
-        *([f"- Rollout rationale: {plan.flag_rationale}"] if plan and plan.flag_rationale else []),
+        *([f"- Rollout rationale: {plan.flag_rationale}"] if plan and plan.flag_rationale and flag_key else []),
         "",
         "## Implementation plan",
         "",

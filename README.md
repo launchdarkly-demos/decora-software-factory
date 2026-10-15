@@ -132,7 +132,7 @@ Artifacts for a run:
 
 ## LaunchDarkly
 
-Flags are required for medium/high-risk changes, large capabilities, significant changes to core user flows, and explicitly requested flags. Small user-facing fixes and polish do not automatically need a flag. The Planner records its rollout rationale; flags that are used default off. The verifier and the ship gate both read the diff. A builder summary that claims the flag exists is not evidence.
+Feature flags and guarded rollout are deferred (`flags.enabled: false`). The factory does not require new flags, audit flag declarations, or provision LaunchDarkly, even if an older issue has a flag key. Tests, review, risk approval and migration safety remain required. Existing application flags are preserved.
 
 When a token is available, passing verification is not enough to reach the reviewer. The factory calls the LaunchDarkly REST API and:
 

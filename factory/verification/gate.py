@@ -60,7 +60,8 @@ class VerificationGate:
             if item.output:
                 lines.append(item.output[-2000:])
         if passed:
-            lines.append("All executed verification commands passed; the flag audit passed.")
+            lines.append("All executed verification commands passed."
+                         + (" The flag audit passed." if flag_required(tools.policy, job) else ""))
         classification: FailureClass = "none"
         if not passed:
             if flag_problems:

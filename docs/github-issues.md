@@ -53,15 +53,14 @@ Temporal address/namespace options as the other commands.
 ## Submit and review
 
 1. Open a GitHub issue using **Decora factory request**. Describe the goal, acceptance
-   criteria, scope, verification and rollout needs. A flag is optional for small changes.
+   criteria, scope, verification and rollout needs. New feature flags and guarded rollout are deferred.
 2. A maintainer adds `factory:ready`. This authorizes model calls and, for a worker
    started with `--push`, a draft PR. The issue must still be open at intake.
 3. The bridge creates one `job-gh-<GitHub issue ID>` workflow. A single status comment
    is updated as stages change and eventually links to the draft PR.
 4. If clarification is needed, the comment supplies the `temporal answer` command
    and current pause ID. Answers currently come from the trusted local CLI, not comments.
-5. Review/test the PR, merge manually, then decide when to enable any flag. The factory
-   does not merge or enable flags.
+5. Review/test the PR and merge manually. Deployment is a separate human decision.
 
 Removing the label or closing the issue stops new intake but **does not cancel a job
 already accepted**. The bridge continues reporting accepted jobs. Editing or relabeling
@@ -82,12 +81,12 @@ multi-host distributed lock implementation.
 | Issue intake | Maintainer label, deduplicated Temporal submission, status/PR comment | GitHub-based clarification, explicit rerun/cancel controls, PR-review feedback loop |
 | Planning | General SDK Planner with ordered tasks, dependencies, migration plans and read-only tools | Independently scheduled sub-jobs/PRs; broader end-to-end acceptance cases |
 | Context | Frontend/backend discovery and bounded file/search tools | Larger-repository scaling and richer semantic navigation |
-| Verification | Required profiles, selected pytest regressions, new Python lint, compile and flag audit | Provision Decora browser/migration suites; required CI and broader coverage |
+| Verification | Required profiles, selected pytest regressions, new Python lint and compile | Provision Decora browser/migration suites; required CI and broader coverage |
 | Isolation | Independent clone, path/command policy; shared host and target virtualenv | Per-job sandbox/container with constrained credentials, filesystem, network and resources; command allowlists are not a security sandbox |
 | Publishing | Draft PR, stable branch reconciliation, issue link | Required CI/branch protection, preview deployments, revision loop for reviewer comments |
 | Durability | Local Temporal database, receipts and Git bundles | Supervised startup/restarts, backups and tested restore, alerts; production Temporal configuration |
 | Cost and control | Bounded retries/timeouts and reported tokens | Per-job spending budgets, queue limits, cancellation and operational monitoring |
-| Deployment/release | Human reviews and merges; LD stays off | Preview workflow, human release decision and rollout/rollback procedure |
+| Deployment/release | Human reviews and merges; no automated deployment | Preview workflow, human release decision and rollout/rollback procedure |
 
 Kubernetes is not required to close these gaps. First make the single-host workflow
 reliable and support the classes of Decora tasks you actually want it to perform.
@@ -102,9 +101,8 @@ comments are ignored. Existing Summary/Acceptance/Flag/Hints issues still work.
 
 A blank template has no acceptance criteria and therefore pauses. Choosing
 `feature flag: no` records rollout intent. User-facing alone does not require a flag.
-Policy requires default-off flags for medium/high-risk changes, large changes,
-important UX changes, or an explicitly supplied flag key. The Planner records its
-assessment and rationale; a no-flag request cannot override those risk rules. `user-facing: unsure` is
+Feature flags and guarded rollout are currently disabled by policy, including for
+older issues that specify a flag key. Risk review and verification remain independent. `user-facing: unsure` is
 conservatively treated as user-facing. This format supports proposing broader
 work without claiming the current Planner can automatically implement it.
 
@@ -122,8 +120,6 @@ verification and the resulting draft PR. Rehearse with the configured verificati
 profiles before going live. The multiple-home-projects request remains a larger
 follow-up until browser and migration verification are configured.
 
-Generated PRs include a short **Rollout** note: no flag needed, or the flag key,
-code default, link when available, and a separate human release decision. Offline
-LaunchDarkly checks are disclosed. Detailed create/reuse and environment verification
-records stay in the run's `launchdarkly.json` artifact. Guarded rollouts are not a
-required factory stage.
+Generated PRs include a short **Rollout** note. With flags disabled, they report no
+feature flag requirement, even when a prior saved request contains a flag key.
+Detailed run evidence stays in artifacts. New flags and guarded rollout are deferred.

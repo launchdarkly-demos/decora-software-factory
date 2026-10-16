@@ -323,27 +323,34 @@ def policy_with_build_timeout(seconds: float):
     return rules.model_copy(update={"stage_timeout_seconds": limits})
 
 
-def test_existing_file_write_returns_feedback_to_builder(tmp_path):
+@pytest.mark.parametrize('exhausted', [False, True])
+def test_existing_file_write_advances_to_verify_without_retry(tmp_path, exhausted):
     from factory.agents.apply import apply_proposal
     from factory.models import BuildProposal, FileEdit, WorktreeInfo
+    from factory.tools.layer import ToolLayer
     from tests.support import bare_job
 
     repo = init_repo(tmp_path / 'repo')
-    original = (repo / 'server.py').read_text()
+    content = 'def capabilities():\n    return {"ok": True}\n'
 
-    class InvalidWrite(ScriptedHarness):
+    class WholeFileWrite(ScriptedHarness):
         def build(self, job, tools):
             return apply_proposal(job, tools, BuildProposal(
                 summary='Update existing file', commit_message='Update server',
-                edits=[FileEdit(path='server.py', kind='write', content='overwrite')]))
+                edits=[FileEdit(path='server.py', kind='write', content=content)]))
 
-    factory = make_factory(tmp_path, repo, InvalidWrite([]))
+    factory = make_factory(tmp_path, repo, WholeFileWrite([]))
+    base = ToolLayer(repo, factory.policy).head_sha()
     job = bare_job(tmp_path, stage=Stage.BUILD, plan=low_plan(files=['server.py']),
-                   worktree=WorktreeInfo(path=str(repo), branch='main', base_sha='HEAD'))
+                   worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=base))
+    if exhausted:
+        job.retries['build'] = factory.policy.max_retries['build']
+    retries = dict(job.retries)
     result = factory._build(job)
-    assert result.stage == Stage.BUILD
-    assert 'Use replace for existing file: server.py' in job.govern_feedback
-    assert job.retries['build'] == 1
-    assert (repo / 'server.py').read_text() == original
-    job.retries['build'] = factory.policy.max_retries['build']
-    assert factory._build(job).stage == Stage.FAILED
+    assert result.stage == Stage.VERIFY
+    assert result.error is None
+    assert job.retries == retries
+    assert job.govern_feedback is None
+    assert (repo / 'server.py').read_text() == content
+    assert len(job.builds) == 1
+    assert job.builds[0].changed_files == ['server.py']

@@ -79,8 +79,14 @@ rollout_rules:
   config_ci: {flag: forbidden, guarded_rollout: none, human_pause: false}
   dependency: {flag: forbidden, guarded_rollout: none, human_pause: false}
 guarded_rollout:
-  default_metric_key: ""  # TODO: owner must choose an allowed rollout metric.
-  allowed_metric_keys: []  # Owner-maintained LaunchDarkly metric keys.
+  # Metrics live in LaunchDarkly project decor-agent-demo-v2 and are fed by the
+  # decor-agent AI SDK tracker ($ld:ai:generation:error, $ld:ai:duration:total).
+  # All are LowerThanBaseline guardrails. Default is the error count (user unit).
+  default_metric_key: ld_autogen__ai-completion-error
+  allowed_metric_keys:
+  - ld_autogen__ai-completion-error       # LLM completion errors per user
+  - ld_autogen__ai-completion-duration    # avg completion latency (ms, request unit)
+  - ld_autogen__ai-completion-duration-p95  # p95 completion latency (ms, request unit)
   min_sample_size: 100
   rollback_on_regression: true
   stages: [1, 5, 25, 50, 100]

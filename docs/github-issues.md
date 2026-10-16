@@ -131,8 +131,10 @@ blank to let the planner choose a new key; the old placeholder is treated as bla
 Multiple keys or invalid names return to planning.
 
 Required guarded rollouts use a metric from `allowed_metric_keys`. A plan may name
-one, otherwise `default_metric_key` applies. The default is intentionally empty:
-the owner must select a metric. Missing metrics pause; unapproved metrics return to
+one, otherwise `default_metric_key` applies. In `policy.decora.yaml` the default is
+`ld_autogen__ai-completion-error` (LLM completion errors, lower is better), with
+average and p95 completion latency also allowed; all are fed by decor-agent's AI
+SDK events in `decor-agent-demo-v2`. If the default is cleared, missing metrics pause; unapproved metrics return to
 planning. Draft PRs record the metric, stages, minimum sample size, and rollback
 setting. Production stays off; a human starts the guarded rollout. The factory
 never starts it. Live LaunchDarkly errors pause for infrastructure recovery;

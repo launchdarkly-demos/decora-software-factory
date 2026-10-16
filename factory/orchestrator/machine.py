@@ -235,6 +235,7 @@ class Factory:
         if job.plan is None:
             return Transition(stage=Stage.FAILED, detail="no plan", error="no plan")
         decision = review_plan(self.policy, job.plan, job)
+        self._write_model(job, "implementation_plan.json", job.plan)
         if decision.retry_plan:
             used = job.retries.get("plan_repair", 0)
             job.govern_feedback = decision.reason
@@ -311,12 +312,13 @@ class Factory:
             record = self.flags.ensure(job)
         except FactoryError as exc:
             text = self.flags.scrub(str(exc))
-            return Transition(stage=Stage.FAILED, detail=text, error=text)
+            return Transition(stage=Stage.AWAIT_HUMAN, detail="LaunchDarkly infrastructure: " + text,
+                              resume_stage=Stage.ENSURE_FLAG)
         job.launchdarkly = record
         self._write_model(job, "launchdarkly.json", record)
         if record.blocks_review():
             detail = record.detail or "flag is not off in production"
-            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=detail, resume_stage=Stage.ENSURE_FLAG)
         return Transition(stage=Stage.REVIEW, detail=record.detail or "flag check recorded")
 
     def _review(self, job: JobState) -> Transition:

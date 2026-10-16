@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from factory.agents.apply import apply_proposal
 from factory.agents.recipes import room_mood_proposal
 from factory.agents.reviewer import review_deterministically
@@ -16,8 +18,7 @@ class MockHarness:
         if _concrete(job):
             plan = ImplementationPlan(
                 summary=feature.summary,
-                files=["app/flags.py", "app/room_mood.py", "server.py", "test_room_mood_flag.py",
-                       "test_room_mood_api.py"],
+                files=["app/flags.py", "app/room_mood.py", "server.py", "test_room_mood_flag.py"],
                 steps=[
                     "Add ROOM_MOOD_FLAG beside the existing flag constants.",
                     "Add app/room_mood.py with FLAG_DEFAULT False.",
@@ -33,6 +34,9 @@ class MockHarness:
                 recipe="flagged_capability_field",
                 context_files=list(context.top_files),
             )
+            # Match the recipe's API test requirement to the target's server.
+            if "FastAPI(" in (Path(context.root) / "server.py").read_text():
+                plan.files.append("test_room_mood_api.py")
         else:
             plan = ImplementationPlan(
                 summary=feature.summary,

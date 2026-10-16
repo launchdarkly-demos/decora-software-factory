@@ -43,6 +43,62 @@ def test_verify_failure_returns_to_the_builder_then_passes(tmp_path: Path) -> No
     assert job.pr.url is None
 
 
+def test_missing_planned_files_return_to_builder_before_verification(tmp_path: Path) -> None:
+    from factory.agents.apply import apply_proposal
+    from factory.models import BuildProposal, FileEdit, PlanTask, WorktreeInfo
+    from tests.support import bare_job
+
+    repo = init_repo(tmp_path / "repo")
+    test_path = "tests/test_legacy.py"
+    fixture_path = "tests/fixtures/legacy.json"
+    plan = low_plan(files=["app/migration.py", test_path, fixture_path],
+                    test_targets=[test_path], flag_key=None)
+    plan.tasks = [PlanTask(
+        id="migration-tests", description="Test legacy data preservation.",
+        files=[test_path, fixture_path], acceptance=["Legacy room context keys survive."],
+    )]
+
+    def incomplete_build(job, tools):
+        return apply_proposal(job, tools, BuildProposal(
+            summary="Implementation only", commit_message="Add migration",
+            edits=[FileEdit(path="app/migration.py", kind="write", content="VALUE = 1\n")],
+        ))
+
+    def corrected_build(job, tools):
+        feedback = job.latest_verify()
+        assert feedback is not None and not feedback.passed
+        assert feedback.commands == []
+        for path in [test_path, fixture_path]:
+            assert f"Create {path} covering" in feedback.actionable
+        assert "Legacy room context keys survive" in feedback.actionable
+        return apply_proposal(job, tools, BuildProposal(
+            summary="Add required tests and fixture", commit_message="Test legacy preservation",
+            edits=[
+                FileEdit(path=fixture_path, kind="write", content='{"context_key": "room-1"}\n'),
+                FileEdit(path=test_path, kind="write", content=(
+                    "import json\nfrom pathlib import Path\n\n\n"
+                    "def test_legacy_context_key():\n"
+                    "    fixture = Path(__file__).parent / 'fixtures' / 'legacy.json'\n"
+                    "    assert json.loads(fixture.read_text())['context_key'] == 'room-1'\n"
+                )),
+            ],
+        ))
+
+    harness = ScriptedHarness([], builds=[incomplete_build, corrected_build])
+    factory = make_factory(tmp_path, repo, harness)
+    tools = factory._tools(bare_job(
+        tmp_path, worktree=WorktreeInfo(path=str(repo), branch="main", base_sha="HEAD")))
+    job = bare_job(tmp_path, stage=Stage.BUILD, plan=plan,
+                   worktree=WorktreeInfo(path=str(repo), branch="main", base_sha=tools.head_sha()))
+    assert factory._build(job).stage == Stage.VERIFY
+    assert factory._verify(job).stage == Stage.BUILD
+    assert job.error is None
+    assert job.retries["verify"] == 1
+    assert factory._build(job).stage == Stage.VERIFY
+    assert factory._verify(job).stage == Stage.ENSURE_FLAG
+    assert job.latest_verify().passed
+
+
 def test_verify_retries_exhausted_fails_without_a_pr(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor")
     verifier = ScriptedVerifier([failed_verify()])

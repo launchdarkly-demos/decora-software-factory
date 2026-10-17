@@ -22,7 +22,7 @@ class Stage(str, Enum):
     FAILED = "failed"
 
 
-FailureClass = Literal["none", "test", "flag", "ambiguous", "infra"]
+FailureClass = Literal["none", "test", "flag", "ambiguous", "infra", "missing_files"]
 ChangeClass = Literal[
     "user_facing_behavior", "ui_cosmetic", "backend_internal", "data_migration",
     "refactor", "docs_only", "tests_only", "config_ci", "dependency",

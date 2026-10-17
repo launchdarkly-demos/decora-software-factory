@@ -158,6 +158,18 @@ until it reaches the separate risk-approval pause.
 
 ## Builder source grounding
 
+The Builder must complete every approved task in dependency order before returning,
+including implementation in existing files, tests, fixtures, and documentation. A
+correction must finish all remaining work, not just create missing test files.
+
+Before running verification commands, the gate checks that all planned files exist.
+Missing files return task-specific feedback to the Builder and use only
+`max_retries.missing_files` (default: 3 correction attempts per job), leaving
+`max_retries.verify` available for failures from full verification. Exhausting the
+missing-file allowance fails the job with the remaining paths and acceptance feedback.
+File existence is a completeness prerequisite; behavioral verification and review
+still establish whether the planned work is implemented correctly.
+
 Builder context contains exact contiguous source prefixes. Truncation instructions
 are separate metadata rather than synthetic code lines. For replacements outside
 that prefix, the Builder must read the relevant range through `read_file` during

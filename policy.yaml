@@ -6,6 +6,7 @@ version: 1
 
 max_retries:
   verify: 2
+  missing_files: 3
   review: 1
   govern: 1
   plan: 2

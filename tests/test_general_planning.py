@@ -165,7 +165,7 @@ def test_decora_profiles_fail_when_target_suites_are_missing(tmp_path):
     base = tools.head_sha()
     tools.write('web/studio.html', '<h1>Homes</h1>')
     tools.commit('Frontend change', ['web/studio.html'])
-    plan = low_plan(flag_key=None, test_targets=[], verification_profiles=['migration'])
+    plan = low_plan(files=['web/studio.html'], flag_key=None, test_targets=[], verification_profiles=['migration'])
     job = bare_job(tmp_path, plan=plan,
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=base))
     result = VerificationGate(repo, tmp_path / 'home').run(job, tools)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -23,6 +24,17 @@ class VerificationGate:
                 commands=[],
                 actionable="verification ran before a plan and a worktree existed",
                 classification="infra",
+            )
+        missing = [path for path in dict.fromkeys(job.plan.files) if not tools._resolve(path).is_file()]
+        if missing:
+            return VerifyResult(
+                passed=False,
+                commands=[],
+                actionable="Planned files are missing; verification was not run. "
+                "Complete ALL remaining plan tasks in dependency order, including implementation, "
+                "tests, and fixtures; creating the missing files alone is not sufficient.\n"
+                + "\n".join(_create_file_feedback(job, path) for path in missing),
+                classification="missing_files",
             )
         diff = tools.diff(job.worktree.base_sha)
         flag_key = job.feature.flag_key or job.plan.flag_key
@@ -57,6 +69,9 @@ class VerificationGate:
         lines = list(problems)
         for item in failed:
             lines.append("$ " + " ".join(item.argv) + f" -> {item.exit_code}")
+            if item.exit_code == 4:
+                for target in re.findall(r"ERROR: file or directory not found: ([^\n]+)", item.output):
+                    lines.append(_create_file_feedback(job, target.strip().split('::')[0]))
             if item.output:
                 lines.append(item.output[-2000:])
         if passed:
@@ -82,10 +97,21 @@ class VerificationGate:
         targets = list(dict.fromkeys([*job.plan.test_targets, *tools.policy.regression_tests]))
         if not targets:
             return []
+        missing = []
         for target in targets:
             if target.startswith('-'):
                 raise ValueError('pytest targets must be repository paths, not options')
-            tools._resolve(target.split('::')[0])
+            path = target.split('::')[0]
+            if not tools._resolve(path).exists():
+                missing.append(path)
+        if missing:
+            return [CommandReport(
+                argv=self._pytest_bin() + targets,
+                exit_code=4,
+                output="pytest was not run because targets are missing.\n"
+                + "\n".join(f"ERROR: file or directory not found: {path}" for path in missing),
+                passed=False,
+            )]
         ini = self.home / "runs" / job.id / "pytest-gate.ini"
         ini.parent.mkdir(parents=True, exist_ok=True)
         ini.write_text("[pytest]\naddopts =\n")
@@ -150,3 +176,12 @@ def _target_python(repo: Path) -> str:
 
 def _missing(name: str) -> CommandReport:
     return CommandReport(argv=[name], exit_code=127, output=f"{name} is not installed", passed=False)
+
+
+def _create_file_feedback(job: JobState, path: str) -> str:
+    assert job.plan is not None
+    tasks = [task for task in job.plan.tasks if path in task.files]
+    coverage = [text for task in tasks for text in [task.description, *task.acceptance]]
+    if not coverage:
+        coverage = [*job.plan.steps, *job.feature.acceptance] or [job.plan.summary]
+    return f"Create {path} covering: " + " ".join(coverage)

@@ -1,11 +1,105 @@
 from pathlib import Path
 
+import pytest
+
 from factory.agents.reviewer import criterion_covered
 from factory.intake.load import load_feature
 from factory.models import ImplementationPlan
 from factory.tools.layer import ToolLayer
 from factory.verification.gate import VerificationGate
 from tests.support import ROOT, bare_job, init_repo, policy
+
+
+@pytest.mark.parametrize("missing", ["test_migration.py", "fixtures/legacy.json"])
+def test_missing_planned_file_blocks_all_commands_with_task_coverage(tmp_path, monkeypatch, missing):
+    from factory.models import PlanTask, WorktreeInfo
+
+    repo = init_repo(tmp_path / "repo")
+    tools = ToolLayer(repo, policy())
+    plan = _plan(["test_migration.py"])
+    plan.files = ["test_migration.py", "fixtures/legacy.json"]
+    plan.tasks = [PlanTask(
+        id="migration-tests", description="Test legacy migration and crash recovery.",
+        files=plan.files, acceptance=["Repeated migration preserves room context keys."],
+    )]
+    for path in plan.files:
+        if path != missing:
+            tools.write(path, "{}\n")
+    job = bare_job(tmp_path, plan=plan,
+                   worktree=WorktreeInfo(path=str(repo), branch="main", base_sha=tools.head_sha()))
+
+    def unexpected_command(*args, **kwargs):
+        pytest.fail("verification commands must not run with a missing planned file")
+
+    monkeypatch.setattr(tools, "run", unexpected_command)
+    result = VerificationGate(repo, tmp_path / "home").run(job, tools)
+    assert not result.passed
+    assert result.classification == "missing_files"
+    assert result.commands == []
+    assert f"Create {missing} covering" in result.actionable
+    assert "legacy migration and crash recovery" in result.actionable
+    assert "Repeated migration preserves room context keys" in result.actionable
+
+
+def test_missing_planned_file_without_tasks_uses_plan_and_acceptance(tmp_path, monkeypatch):
+    from factory.models import WorktreeInfo
+
+    repo = init_repo(tmp_path / "repo")
+    tools = ToolLayer(repo, policy())
+    plan = _plan(["test_new.py"])
+    plan.steps = ["Prove migration is repeatable"]
+    job = bare_job(tmp_path, plan=plan,
+                   worktree=WorktreeInfo(path=str(repo), branch="main", base_sha=tools.head_sha()))
+    monkeypatch.setattr(tools, "run", lambda *args, **kwargs: pytest.fail("unexpected command"))
+    result = VerificationGate(repo, tmp_path / "home").run(job, tools)
+    assert "Create test_new.py covering" in result.actionable
+    assert "Prove migration is repeatable" in result.actionable
+    assert job.feature.acceptance[0] in result.actionable
+
+
+def test_missing_pytest_target_names_path_without_running_pytest(tmp_path, monkeypatch):
+    repo = init_repo(tmp_path / "repo")
+    tools = ToolLayer(repo, policy())
+    plan = _plan([])
+    plan.test_targets = ["tests/test_missing.py::test_migration"]
+    job = bare_job(tmp_path, plan=plan)
+    monkeypatch.setattr(tools, "run", lambda *args, **kwargs: pytest.fail("unexpected pytest invocation"))
+    reports = VerificationGate(repo, tmp_path / "home")._pytest(job, tools)
+    assert len(reports) == 1
+    assert not reports[0].passed
+    assert reports[0].exit_code == 4
+    assert "tests/test_missing.py" in reports[0].output
+
+
+def test_pytest_exit_four_feedback_keeps_missing_profile_path(tmp_path, monkeypatch):
+    from factory.governance.policy import VerificationProfile
+    from factory.models import CommandReport, WorktreeInfo
+
+    repo = init_repo(tmp_path / "repo")
+    rules = policy()
+    rules.regression_tests = []
+    rules.verification_profiles["migration"] = VerificationProfile(
+        description="Migration checks", kind="migration", commands=[["pytest", "tests/migrations"]])
+    tools = ToolLayer(repo, rules)
+    plan = _plan([])
+    plan.verification_profiles = ["migration"]
+    job = bare_job(tmp_path, plan=plan,
+                   worktree=WorktreeInfo(path=str(repo), branch="main", base_sha=tools.head_sha()))
+    original_run = tools.run
+
+    def run(argv, **kwargs):
+        if argv[0] == "pytest":
+            return CommandReport(
+                argv=argv, exit_code=4, passed=False,
+                output="ERROR: file or directory not found: tests/migrations\n" + "noise\n" * 500,
+            )
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(tools, "run", run)
+    result = VerificationGate(repo, tmp_path / "home").run(job, tools)
+    assert not result.passed
+    assert result.classification == "test"
+    assert "Create tests/migrations covering" in result.actionable
 
 
 def test_gate_passes_a_real_pytest_and_records_a_failure(tmp_path: Path) -> None:

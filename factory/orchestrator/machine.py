@@ -296,6 +296,16 @@ class Factory:
                 detail=result.actionable,
                 resume_stage=Stage.PLAN,
             )
+        if result.classification == "missing_files":
+            used = job.retries.get("missing_files", 0)
+            if used >= self.policy.max_retries.get("missing_files", 3):
+                return Transition(
+                    stage=Stage.FAILED,
+                    detail="missing planned files correction retries exhausted",
+                    error="missing planned files correction retries exhausted\n" + result.actionable,
+                )
+            job.retries["missing_files"] = used + 1
+            return Transition(stage=Stage.BUILD, detail="complete remaining plan tasks and missing files")
         used = job.retries.get("verify", 0)
         if used >= self.policy.max_retries.get("verify", 2):
             return Transition(

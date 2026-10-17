@@ -22,7 +22,7 @@ class Stage(str, Enum):
     FAILED = "failed"
 
 
-FailureClass = Literal["none", "test", "flag", "ambiguous", "infra"]
+FailureClass = Literal["none", "test", "flag", "ambiguous", "infra", "missing_files"]
 Risk = Literal["low", "medium", "high"]
 Verdict = Literal["approve", "changes_requested", "needs_human"]
 

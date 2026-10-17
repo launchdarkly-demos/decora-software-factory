@@ -43,6 +43,23 @@ def test_verify_failure_returns_to_the_builder_then_passes(tmp_path: Path) -> No
     assert job.pr.url is None
 
 
+def test_missing_file_correction_preserves_budget_for_a_real_verify_failure(tmp_path: Path) -> None:
+    repo = init_repo(tmp_path / "repo")
+    rules = policy()
+    rules.max_retries["verify"] = 1
+    verifier = ScriptedVerifier([
+        failed_verify("Create planned test file", "missing_files"),
+        failed_verify("AssertionError: implementation needs correction"),
+        passed_verify(),
+    ])
+    job = make_factory(tmp_path, repo, ScriptedHarness([low_plan()]),
+                       policy=rules, verifier=verifier).run(feature())
+
+    assert job.stage == Stage.DONE, job.error
+    assert job.retries == {"missing_files": 1, "verify": 1}
+    assert len(job.builds) == 3
+
+
 def test_missing_planned_files_return_to_builder_before_verification(tmp_path: Path) -> None:
     from factory.agents.apply import apply_proposal
     from factory.models import BuildProposal, FileEdit, PlanTask, WorktreeInfo
@@ -93,10 +110,87 @@ def test_missing_planned_files_return_to_builder_before_verification(tmp_path: P
     assert factory._build(job).stage == Stage.VERIFY
     assert factory._verify(job).stage == Stage.BUILD
     assert job.error is None
-    assert job.retries["verify"] == 1
+    assert job.retries.get("verify", 0) == 0
+    assert job.retries["missing_files"] == 1
     assert factory._build(job).stage == Stage.VERIFY
     assert factory._verify(job).stage == Stage.ENSURE_FLAG
     assert job.latest_verify().passed
+
+
+def test_multitask_build_finishes_before_full_verification(tmp_path: Path) -> None:
+    from factory.agents.apply import apply_proposal
+    from factory.models import BuildProposal, FileEdit, PlanTask
+
+    repo = init_repo(tmp_path / "repo")
+    paths = ["README.md", "app/migration.py", "tests/fixtures/legacy.json", "tests/test_legacy.py"]
+    plan = low_plan(files=paths, test_targets=[paths[-1]], flag_key=None)
+    plan.tasks = [
+        PlanTask(id=f"T{i}", description=f"Complete {path}", files=[path],
+                 depends_on=[f"T{i - 1}"] if i > 1 else [], acceptance=[f"{path} is complete"])
+        for i, path in enumerate(paths, 1)
+    ]
+    edits = [
+        FileEdit(path=paths[0], kind="replace", old="mini decora", new="Migration plan inspected"),
+        FileEdit(path=paths[1], kind="write", content="def migrate(data):\n    return dict(data)\n"),
+        FileEdit(path=paths[2], kind="write", content='{"context_key": "room-1"}\n'),
+        FileEdit(path=paths[3], kind="write", content=(
+            "import json\nfrom pathlib import Path\n\nfrom app.migration import migrate\n\n\n"
+            "def test_legacy():\n"
+            "    fixture = Path(__file__).parent / 'fixtures' / 'legacy.json'\n"
+            "    assert migrate(json.loads(fixture.read_text()))['context_key'] == 'room-1'\n"
+        )),
+    ]
+
+    def build_next_task(job, tools):
+        attempt = len(job.builds)
+        if attempt:
+            assert job.latest_verify().commands == []
+            assert job.retries.get("verify", 0) == 0
+        return apply_proposal(job, tools, BuildProposal(
+            summary=f"Complete T{attempt + 1}", commit_message=f"Complete T{attempt + 1}",
+            edits=[edits[attempt]],
+        ))
+
+    rules = policy()
+    rules.max_retries["verify"] = 0
+    # YAML policies may omit missing_files: the default allowance must still apply.
+    rules.max_retries.pop("missing_files", None)
+    harness = ScriptedHarness([plan], builds=[build_next_task])
+    job = make_factory(tmp_path, repo, harness, policy=rules).run(feature())
+
+    assert job.stage == Stage.DONE, job.error
+    assert harness.build_calls == 4
+    assert job.retries == {"missing_files": 3}
+    assert all(run.commands == [] for run in job.verify_runs[:-1])
+    assert job.latest_verify().passed
+    assert job.latest_verify().commands
+    assert job.pr is not None and job.pr.dry_run
+
+
+@pytest.mark.parametrize("cap", [None, 0, 1, 4])
+def test_missing_file_corrections_have_an_independent_cap(tmp_path: Path, cap: int | None) -> None:
+    from factory.models import WorktreeInfo
+    from tests.support import bare_job
+
+    repo = init_repo(tmp_path / "repo")
+    factory = make_factory(tmp_path, repo)
+    if cap is None:
+        factory.policy.max_retries.pop("missing_files", None)
+    else:
+        factory.policy.max_retries["missing_files"] = cap
+    limit = 3 if cap is None else cap
+    job = bare_job(tmp_path, plan=low_plan(files=["missing.py"]),
+                   worktree=WorktreeInfo(path=str(repo), branch="main", base_sha="HEAD"))
+    job.retries["verify"] = factory.policy.max_retries["verify"]
+    for used in range(1, limit + 1):
+        assert factory._verify(job).stage == Stage.BUILD
+        assert job.retries["missing_files"] == used
+    exhausted = factory._verify(job)
+    assert exhausted.stage == Stage.FAILED
+    assert "missing planned files correction retries exhausted" in exhausted.error
+    assert "missing.py" in exhausted.error
+    assert job.retries.get("missing_files", 0) == limit
+    assert job.retries["verify"] == factory.policy.max_retries["verify"]
 
 
 def test_verify_retries_exhausted_fails_without_a_pr(tmp_path: Path) -> None:

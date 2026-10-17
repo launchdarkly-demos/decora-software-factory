@@ -34,7 +34,7 @@ def test_missing_planned_file_blocks_all_commands_with_task_coverage(tmp_path, m
     monkeypatch.setattr(tools, "run", unexpected_command)
     result = VerificationGate(repo, tmp_path / "home").run(job, tools)
     assert not result.passed
-    assert result.classification == "test"
+    assert result.classification == "missing_files"
     assert result.commands == []
     assert f"Create {missing} covering" in result.actionable
     assert "legacy migration and crash recovery" in result.actionable

@@ -30,9 +30,11 @@ class VerificationGate:
             return VerifyResult(
                 passed=False,
                 commands=[],
-                actionable="Planned files are missing; verification was not run.\n"
+                actionable="Planned files are missing; verification was not run. "
+                "Complete ALL remaining plan tasks in dependency order, including implementation, "
+                "tests, and fixtures; creating the missing files alone is not sufficient.\n"
                 + "\n".join(_create_file_feedback(job, path) for path in missing),
-                classification="test",
+                classification="missing_files",
             )
         diff = tools.diff(job.worktree.base_sha)
         flag_key = job.feature.flag_key or job.plan.flag_key

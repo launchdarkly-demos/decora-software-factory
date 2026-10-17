@@ -57,7 +57,7 @@ class PullRequestRules(BaseModel):
 
 
 class LaunchDarklyRules(BaseModel):
-    project_key: str = "decora-software-factory-demo"
+    project_key: str = "alexis-interior-design-demo-app"
     environments: list[str] = Field(default_factory=lambda: ["test", "production"])
     production_environment: str = "production"
 

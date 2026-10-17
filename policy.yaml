@@ -96,7 +96,7 @@ guarded_rollout:
   stages: [1, 5, 25, 50, 100]
 
 launchdarkly:
-  project_key: decora-software-factory-demo
+  project_key: alexis-interior-design-demo-app
   environments:
     - test
     - production

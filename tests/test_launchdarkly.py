@@ -32,7 +32,7 @@ from tests.support import (
 
 SECRET = "ld-test-token-value"
 FLAG_URL = (
-    "https://app.launchdarkly.com/projects/decor-agent-demo-v2/flags/"
+    "https://app.launchdarkly.com/projects/alexis-interior-design-demo-app/flags/"
     "decor-room-mood/targeting?env=production"
 )
 
@@ -100,7 +100,7 @@ def test_client_scrubs_the_token_from_api_errors() -> None:
 
     client = LaunchDarklyClient(SECRET, urlopen=urlopen)
     with pytest.raises(FactoryError) as caught:
-        client.request("GET", "/flags/decor-agent-demo-v2/decor-room-mood")
+        client.request("GET", "/flags/alexis-interior-design-demo-app/decor-room-mood")
     assert SECRET not in str(caught.value)
     assert "[redacted]" in str(caught.value)
 
@@ -127,7 +127,7 @@ def test_client_keeps_not_found_and_sends_semantic_patch() -> None:
     client = LaunchDarklyClient(SECRET, urlopen=urlopen)
     status, body = client.request(
         "PATCH",
-        "/flags/decor-agent-demo-v2/decor-room-mood",
+        "/flags/alexis-interior-design-demo-app/decor-room-mood",
         {"instructions": [{"kind": "turnFlagOff"}]},
         semantic=True,
     )
@@ -171,7 +171,9 @@ def test_reuses_a_flag_and_turns_targeting_off(tmp_path: Path) -> None:
 
 def test_creates_a_boolean_flag_without_variations(tmp_path: Path) -> None:
     memory = MemoryLaunchDarkly(None)
-    record = _service(tmp_path, memory).ensure(_job())
+    job = _job()
+    job.feature.flag_key = None
+    record = _service(tmp_path, memory).ensure(job)
     created = next(call for call in memory.calls if call[0] == "POST")
 
     assert record.created
@@ -191,7 +193,9 @@ def test_conflict_on_create_reuses_the_flag(tmp_path: Path) -> None:
         ),
         hide_until_create=True,
     )
-    record = _service(tmp_path, memory).ensure(_job())
+    job = _job()
+    job.feature.flag_key = None
+    record = _service(tmp_path, memory).ensure(job)
 
     assert record.reused
     assert record.created is False
@@ -199,7 +203,7 @@ def test_conflict_on_create_reuses_the_flag(tmp_path: Path) -> None:
     assert [call[0] for call in memory.calls] == ["GET", "POST", "GET"]
 
 
-def test_flag_that_stays_on_fails_before_review(tmp_path: Path) -> None:
+def test_flag_that_stays_on_pauses_before_review(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor")
     memory = MemoryLaunchDarkly(boolean_flag(on=True), stick_on=True)
     harness = ScriptedHarness([low_plan()])
@@ -211,13 +215,13 @@ def test_flag_that_stays_on_fails_before_review(tmp_path: Path) -> None:
         verifier=ScriptedVerifier([passed_verify()]),
     ).run(feature(user_facing=True, flag_key="decor-room-mood", title="Room mood"))
 
-    assert job.stage == Stage.FAILED
+    assert job.stage == Stage.AWAIT_HUMAN
     assert job.review is None
     assert job.reviews == []
     assert job.pr is None
-    assert job.error is not None
-    assert "production" in job.error
-    assert "is not off serving false" in job.error
+    assert job.resume_stage == Stage.ENSURE_FLAG
+    assert "production" in job.question
+    assert "is not off serving false" in job.question
 
 
 def test_live_api_error_does_not_leak_the_token(tmp_path: Path) -> None:
@@ -242,11 +246,12 @@ def test_live_api_error_does_not_leak_the_token(tmp_path: Path) -> None:
         verifier=ScriptedVerifier([passed_verify()]),
     ).run(feature(user_facing=True, flag_key="decor-room-mood"))
 
-    assert job.stage == Stage.FAILED
+    assert job.stage == Stage.AWAIT_HUMAN
     assert job.pr is None
     assert job.review is None
     assert SECRET not in (job.error or "")
-    assert "[redacted]" in (job.error or "")
+    assert "[redacted]" in (job.question or "")
+    assert job.resume_stage == Stage.ENSURE_FLAG
     assert SECRET not in job.model_dump_json()
     assert SECRET not in render_pr(job, "")
 
@@ -261,7 +266,7 @@ def test_auto_without_a_token_skips_and_the_pr_says_so(tmp_path: Path) -> None:
     job = bare_job(tmp_path, feature=feature(user_facing=True, flag_key="decor-room-mood"))
     job.launchdarkly = record
     body = render_pr(job, "")
-    assert "Live LaunchDarkly check skipped" in body
+    assert "Flag was not provisioned/verified" in body
     assert FLAG_URL not in body
 
     job.launchdarkly = record.model_copy(update={"mode": "live", "url": FLAG_URL, "created": True})

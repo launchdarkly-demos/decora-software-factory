@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from factory.errors import GovernanceError
-from factory.governance.policy import Policy
+from factory.governance.policy import Policy, guarded_rollout_required, selected_flag_key
 from factory.models import JobState, PullRequestDraft
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -21,7 +21,7 @@ class Publisher:
     def publish(self, job: JobState, diff: str, run_dir: Path) -> PullRequestDraft:
         run_dir.mkdir(parents=True, exist_ok=True)
         title = f"[factory] {job.feature.title}"
-        body = render_pr(job, diff)
+        body = render_pr(job, diff, self.policy)
         body_path = run_dir / "pr-body.md"
         body_path.write_text(body)
         branch = job.worktree.branch if job.worktree else None
@@ -95,14 +95,14 @@ def _flag_lines(job: JobState) -> list[str]:
     if record is not None and record.url:
         return [f"- [LaunchDarkly flag]({record.url})"]
     if record is not None and record.required and record.mode == "offline":
-        return ["- Live LaunchDarkly check skipped (`--ld offline` or no API token)."]
+        return ["- Flag was not provisioned/verified in LaunchDarkly (`--ld offline` or no API token)."]
     return []
 
 
-def render_pr(job: JobState, diff: str) -> str:
+def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
     plan = job.plan
     review = job.review
-    flag_key = job.feature.flag_key or (plan.flag_key if plan else None)
+    flag_key = selected_flag_key(job)
     if job.launchdarkly is not None and not job.launchdarkly.required:
         flag_key = None
     flag_section = (["- No feature flag required for this change."]
@@ -111,6 +111,14 @@ def render_pr(job: JobState, diff: str) -> str:
                         + ("on." if (plan.flag_default if plan else job.feature.flag_default) else "off."),
                         "- Enabling the feature is a separate human release decision.",
                         *_flag_lines(job)])
+    if policy and guarded_rollout_required(policy, job):
+        rollout = policy.guarded_rollout
+        flag_section.extend([
+            f"- Guarded rollout metric: `{plan.guarded_rollout_metric if plan else ''}`.",
+            f"- Stages (%): {', '.join(map(str, rollout.stages))}; minimum sample size: {rollout.min_sample_size}.",
+            f"- Rollback on regression: {str(rollout.rollback_on_regression).lower()}.",
+            "- Flag must remain off in production. A human starts the guarded rollout; the factory does not start it.",
+        ])
     lines = [
         f"# {job.feature.title}",
         "",

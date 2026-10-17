@@ -53,7 +53,7 @@ Temporal address/namespace options as the other commands.
 ## Submit and review
 
 1. Open a GitHub issue using **Decora factory request**. Describe the goal, acceptance
-   criteria, scope, verification and rollout needs. New feature flags and guarded rollout are deferred.
+   criteria, scope, verification and rollout needs. Use the class rules below.
 2. A maintainer adds `factory:ready`. This authorizes model calls and, for a worker
    started with `--push`, a draft PR. The issue must still be open at intake.
 3. The bridge creates one `job-gh-<GitHub issue ID>` workflow. A single status comment
@@ -99,12 +99,47 @@ preserves scope, verification, and rollout text for the agents; context becomes
 file-discovery hints. Markdown checkboxes are accepted and instructional HTML
 comments are ignored. Existing Summary/Acceptance/Flag/Hints issues still work.
 
-A blank template has no acceptance criteria and therefore pauses. Choosing
-`feature flag: no` records rollout intent. User-facing alone does not require a flag.
-Feature flags and guarded rollout are currently disabled by policy, including for
-older issues that specify a flag key. Risk review and verification remain independent. `user-facing: unsure` is
-conservatively treated as user-facing. This format supports proposing broader
-work without claiming the current Planner can automatically implement it.
+A blank template has no acceptance criteria and therefore pauses. User-facing alone does
+not decide flag requirements; the explicit change class does.
+
+## Issue policy
+
+Set `change_class` in the plan, optionally overridden by the feature request or a
+`factory:class/<name>` label. The issue's Change type field accepts the same names.
+When omitted, docs/Markdown-only files become docs_only, tests/-only files become
+tests_only, and requires_migration becomes data_migration. Other missing or conflicting
+classes pause for a concrete classification question. Intake handles `factory:ready`;
+governance does not require that label again.
+
+| Class | Flag | Guarded rollout | Human review |
+| --- | --- | --- | --- |
+| user_facing_behavior | Required | Required | High risk |
+| ui_cosmetic | Optional | None | High risk |
+| backend_internal | Required for medium/high risk or large change; otherwise optional | None | High risk |
+| data_migration | Required, with flag-off compatibility | Required | Always |
+| refactor | Exempt | None | High risk |
+| docs_only | Exempt | None | High risk |
+| tests_only | Exempt | None | High risk |
+| config_ci | Exempt | None | High risk |
+| dependency | Exempt | None | High risk |
+
+Exempt classes skip flag audits and provisioning. `flags.enabled` is the master
+switch (enabled in policy.decora.yaml); `must_default_off` still applies. Jobs use
+one flag, matching configurable `^decora-[a-z0-9-]+$`. An issue-supplied key must
+already exist in live LaunchDarkly and is reused, never created. Leave Flag key
+blank to let the planner choose a new key; the old placeholder is treated as blank.
+Multiple keys or invalid names return to planning.
+
+Required guarded rollouts use a metric from `allowed_metric_keys`. A plan may name
+one, otherwise `default_metric_key` applies. In `policy.decora.yaml` the default is
+`decora-request-error` (failed Decora API requests and chat turns, event
+`decora_request_error`, lower is better). `ld_autogen__ai-completion-error` is also
+allowed. Both are per-user count metrics in `alexis-interior-design-demo-app`. If the default is cleared, missing metrics pause; unapproved metrics return to
+planning. Draft PRs record the metric, stages, minimum sample size, and rollback
+setting. Production stays off; a human starts the guarded rollout. The factory
+never starts it. Live LaunchDarkly errors pause for infrastructure recovery;
+`--ld offline` allows building and a draft PR that discloses the flag was not
+provisioned/verified.
 
 ## Demo: request to reviewed pull request
 
@@ -120,6 +155,5 @@ verification and the resulting draft PR. Rehearse with the configured verificati
 profiles before going live. The multiple-home-projects request remains a larger
 follow-up until browser and migration verification are configured.
 
-Generated PRs include a short **Rollout** note. With flags disabled, they report no
-feature flag requirement, even when a prior saved request contains a flag key.
-Detailed run evidence stays in artifacts. New flags and guarded rollout are deferred.
+Generated PRs include rollout guidance and verification evidence. A human reviews,
+merges, and starts any required guarded rollout.

@@ -23,6 +23,10 @@ class Stage(str, Enum):
 
 
 FailureClass = Literal["none", "test", "flag", "ambiguous", "infra"]
+ChangeClass = Literal[
+    "user_facing_behavior", "ui_cosmetic", "backend_internal", "data_migration",
+    "refactor", "docs_only", "tests_only", "config_ci", "dependency",
+]
 Risk = Literal["low", "medium", "high"]
 Verdict = Literal["approve", "changes_requested", "needs_human"]
 
@@ -34,7 +38,9 @@ class FeatureRequest(BaseModel):
     title: str
     summary: str
     acceptance: list[str] = Field(default_factory=list)
-    user_facing: bool = True
+    user_facing: bool = False
+    change_class: ChangeClass | None = None
+    labels: list[str] = Field(default_factory=list)
     flag_key: str | None = None
     flag_default: bool = False
     source: str = "file"
@@ -71,6 +77,8 @@ class PlanTask(BaseModel):
 
 
 class ImplementationPlan(BaseModel):
+    change_class: ChangeClass | None = None
+    guarded_rollout_metric: str | None = None
     summary: str
     files: list[str]
     steps: list[str]

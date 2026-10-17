@@ -140,7 +140,9 @@ def test_decora_policy_covers_home_projects_without_bypassing_migration_approval
     from tests.support import ROOT
 
     rules = load_policy(ROOT / 'policy.decora.yaml')
-    plan = low_plan(files=['web/studio.js', 'app/store.py'], requires_migration=True,
+    rules.guarded_rollout.default_metric_key = 'errors'
+    rules.guarded_rollout.allowed_metric_keys = ['errors']
+    plan = low_plan(flag_key='decora-projects', files=['web/studio.js', 'app/store.py'], requires_migration=True,
                     migration_plan='Preserve legacy records; test repeat and partial migration.')
     assert set(selected_profiles(rules, plan, plan.files)) == {'studio-browser', 'migration'}
     assert prerequisites(rules, plan, plan.files) == []
@@ -156,6 +158,8 @@ def test_decora_profiles_fail_when_target_suites_are_missing(tmp_path):
 
     repo = init_repo(tmp_path / 'repo')
     rules = load_policy(ROOT / 'policy.decora.yaml')
+    rules.guarded_rollout.default_metric_key = 'errors'
+    rules.guarded_rollout.allowed_metric_keys = ['errors']
     rules.regression_tests = []
     tools = ToolLayer(repo, rules)
     base = tools.head_sha()

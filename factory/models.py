@@ -72,6 +72,7 @@ class PlanTask(BaseModel):
     id: str
     description: str
     files: list[str]
+    quick_test_targets: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     acceptance: list[str] = Field(default_factory=list)
 
@@ -113,11 +114,14 @@ class BuildProposal(BaseModel):
     summary: str
     commit_message: str
     edits: list[FileEdit]
+    task_complete: bool = True
     commands: list[list[str]] = Field(default_factory=list)
     flag_default: bool = False
 
 
 class BuildResult(BaseModel):
+    task_complete: bool = True
+    correction: str | None = None
     commit: str
     changed_files: list[str]
     summary: str
@@ -223,6 +227,16 @@ class JobState(BaseModel):
     question: str | None = None
     human_answers: list[str] = Field(default_factory=list)
     resume_stage: Stage | None = None
+    current_task_id: str | None = None
+    completed_task_ids: list[str] = Field(default_factory=list)
+    checkpoint_shas: dict[str, list[str]] = Field(default_factory=dict)
+    task_summaries: dict[str, str] = Field(default_factory=dict)
+    task_retries: dict[str, int] = Field(default_factory=dict)
+    task_split_attempts: dict[str, int] = Field(default_factory=dict)
+    builder_calls: int = 0
+    completed_builder_calls: int = 0
+    auto_added_files: list[str] = Field(default_factory=list)
+    quick_verify_runs: dict[str, list[VerifyResult]] = Field(default_factory=dict)
     retries: dict[str, int] = Field(default_factory=dict)
     usage: Usage = Field(default_factory=Usage)
     worktree: WorktreeInfo | None = None

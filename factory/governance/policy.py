@@ -7,7 +7,7 @@ from typing import Literal, cast, get_args
 import yaml
 from pydantic import BaseModel, Field
 
-from factory.errors import GovernanceError
+from factory.errors import FactoryError, GovernanceError
 from factory.models import ChangeClass, ImplementationPlan, JobState
 
 
@@ -71,8 +71,12 @@ class VerificationProfile(BaseModel):
 
 class Policy(BaseModel):
     version: int = 1
+    builder_max_output_tokens: int = Field(default=6000, gt=0)
+    per_task_retries: int = Field(default=3, ge=0)
+    max_job_attempts: int = Field(default=25, gt=0)
+    split_attempts: int = Field(default=3, ge=0)
     max_retries: dict[str, int] = Field(
-        default_factory=lambda: {"verify": 2, "review": 1, "govern": 1, "plan": 2, "plan_repair": 2, "build": 3}
+        default_factory=lambda: {"review": 1, "govern": 1, "plan": 2, "plan_repair": 2}
     )
     stage_timeout_seconds: dict[str, float] = Field(default_factory=dict)
     regression_tests: list[str] = Field(default_factory=list)
@@ -102,21 +106,21 @@ class Policy(BaseModel):
 
     def check_command(self, argv: list[str]) -> None:
         if not argv:
-            raise GovernanceError("empty command")
+            raise FactoryError("empty command; return commands=[] or a policy-approved test command")
         line = " ".join(argv)
         for pattern in self.deny_command_patterns:
             if pattern and pattern in line:
                 raise GovernanceError(f"command denied by policy: {line}")
         name = Path(argv[0]).name
         if name not in self.allow_commands:
-            raise GovernanceError(f"command not allowlisted: {name}")
+            raise FactoryError(f"command not allowlisted: {name}; return commands=[] and let verification run")
         # `python -c` runs arbitrary code. `pytest -c` is a config path and stays allowed.
         if name in {"python", "python3"} and len(argv) > 1 and argv[1] == "-c":
             raise GovernanceError("python -c is not allowlisted")
         if name == "git":
             sub = _git_subcommand(argv)
             if sub not in self.git_subcommands:
-                raise GovernanceError(f"git {sub} is not allowlisted")
+                raise FactoryError(f"git {sub} is not allowlisted; return commands=[] and let verification run")
 
     def check_path(self, rel: str) -> None:
         normalized = rel.replace("\\", "/").lstrip("/")

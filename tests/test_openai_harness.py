@@ -202,3 +202,84 @@ def test_builder_formats_generated_python_before_commit_and_verification(tmp_pat
     assert tools.run(['ruff', 'check', '--isolated', '--select', 'E,F', 'test_generated.py']).passed
     assert tools.run(['pytest', '-q', 'test_generated.py']).passed
     assert tools.run(['git', 'status', '--porcelain', '--untracked-files=no']).output.strip() == ''
+
+
+def test_builder_payload_is_current_task_only_and_output_cap_is_policy(tmp_path, monkeypatch):
+    import json
+
+    import agents
+
+    from factory.models import BuildProposal, FileEdit, PlanTask
+    from factory.tools.layer import ToolLayer
+    from tests.support import init_repo, low_plan, policy
+
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
+    repo = init_repo(tmp_path / 'repo')
+    tools = ToolLayer(repo, policy())
+    plan = low_plan(files=['done.py', 'server.py', 'future.py'], tasks=[
+        PlanTask(id='done', description='Done task', files=['done.py'], acceptance=['done']),
+        PlanTask(id='now', description='Current task', files=['server.py'], depends_on=['done'], acceptance=['now']),
+        PlanTask(id='future', description='Future task', files=['future.py'],
+                 depends_on=['now'], acceptance=['future']),
+    ])
+    job = bare_job(tmp_path, plan=plan, completed_task_ids=['done'], task_summaries={'done': 'Completed summary'},
+                   worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
+
+    def run(agent, payload, **kwargs):
+        data = json.loads(payload)
+        assert 'plan' not in data
+        assert data['task']['id'] == 'now'
+        assert data['task']['files'] == ['server.py']
+        assert data['completed_tasks'] == [{'id': 'done', 'summary': 'Completed summary'}]
+        assert [item['path'] for item in data['files']] == ['server.py']
+        assert 'future.py' not in payload
+        assert agent.model_settings.max_tokens == 1234
+        return SimpleNamespace(raw_responses=[], final_output=BuildProposal(
+            summary='Update value', commit_message='Update value',
+            edits=[FileEdit(path='server.py', kind='write', content='VALUE = 42\n')]))
+
+    monkeypatch.setattr(agents.Runner, 'run_sync', run)
+    rules = policy().model_copy(update={'builder_max_output_tokens': 1234})
+    OpenAIAgentsHarness(policy=rules).build(job, tools)
+    assert tools.read('server.py') == 'VALUE = 42\n'
+
+
+def test_sdk_cutoff_is_classified_as_a_split_request(tmp_path, monkeypatch):
+    import agents
+
+    from factory.errors import IncompleteBuildError
+    from factory.tools.layer import ToolLayer
+    from tests.support import init_repo, low_plan, policy
+
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
+    repo = init_repo(tmp_path / 'repo')
+    job = bare_job(tmp_path, plan=low_plan(files=['server.py']))
+
+    def run(*args, **kwargs):
+        raise RuntimeError('max_output_tokens reached; incomplete response')
+
+    monkeypatch.setattr(agents.Runner, 'run_sync', run)
+    with pytest.raises(IncompleteBuildError, match='smaller part now') as caught:
+        OpenAIAgentsHarness(policy=policy()).build(job, ToolLayer(repo, policy()))
+    assert 'same task' in str(caught.value)
+    assert 'replace snippet' not in str(caught.value)
+
+
+@pytest.mark.parametrize('truncated', [False, True])
+def test_invalid_complete_proposal_is_a_correction_but_provider_cutoff_is_a_split(tmp_path, monkeypatch, truncated):
+    import agents
+
+    from factory.errors import IncompleteBuildError
+    from factory.tools.layer import ToolLayer
+    from tests.support import init_repo, low_plan, policy
+
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
+    repo = init_repo(tmp_path / 'repo')
+    job = bare_job(tmp_path, plan=low_plan(files=['server.py']))
+    monkeypatch.setattr(agents.Runner, 'run_sync', lambda *args, **kwargs: SimpleNamespace(
+        final_output={'summary': 'missing required fields'},
+        raw_responses=[SimpleNamespace(status='incomplete' if truncated else 'completed')]))
+    with pytest.raises(FactoryError) as caught:
+        OpenAIAgentsHarness(policy=policy()).build(job, ToolLayer(repo, policy()))
+    assert isinstance(caught.value, IncompleteBuildError) == truncated
+    assert ('split' if truncated else 'invalid proposal format') in str(caught.value)

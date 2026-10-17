@@ -34,8 +34,10 @@ characters per specialist run, bounded further by 20 SDK turns. Symlinks, traver
 secret/config directories, `.env*`, credentials, generated/dependency trees, and the
 PIM catalog are excluded. Maintainer deny-path policy also applies.
 
-Builder edits must belong to `plan.files`. Existing files require replace edits;
-write edits cannot overwrite them. These checks are not an OS sandbox: generated
+Builder edits focus on the current task. Safe in-repo extra files (including package
+`__init__.py`) are added to the plan automatically and listed separately in the draft PR.
+Existing files accept either focused replacements or path-checked whole-file writes.
+These checks are not an OS sandbox: generated
 tests and configured commands still execute on the worker host.
 
 ## Configure verification once per target stack
@@ -164,8 +166,9 @@ that prefix, the Builder must read the relevant range through `read_file` during
 that attempt. Anchors absent from supplied/read source are rejected with corrective
 feedback. Each retry rebuilds the source payload from the current checkout.
 
-The edit applier rejects preview markers, empty proposals, out-of-plan files and
-whole-file writes over existing files. It simulates the entire sequence of edits
+The edit applier rejects preview markers and empty proposals as corrections. Protected
+paths, traversal, symlink escapes, outside-repo paths and secrets are fatal safety errors.
+It checks the entire proposal for safety and simulates the sequence of edits
 before writing any file, so a bad later anchor does not leave earlier edits applied.
 This preflight protects against validation failures; it is not a filesystem transaction
 for disk errors or a rollback of commands run after successful edits.
@@ -174,5 +177,46 @@ After applying a proposal, the factory formats its edited Python files with the
 worker's Ruff formatter before running proposal commands and committing. Formatting
 uses isolated defaults and stays inside the approved edit scope. This prevents
 fixable layout errors from consuming model repair attempts. Formatting failures
-block the build; the normal lint and behavioral verification gates still run,
-since formatting alone cannot fix every lint error or establish correctness.
+return to the current task as corrections after recording the applied source in a
+checkpoint. The normal lint and behavioral verification gates still run, since
+formatting alone cannot fix every lint error or establish correctness.
+
+## Builder task queue and retry policy
+
+`plan.tasks` runs in dependency order. Each task owns files and acceptance checks,
+with optional `quick_test_targets` containing pytest paths or selectors. Plan tasks
+must fit one Builder response; use importable Python module names and include
+`__init__.py` for new packages. Nested test directories are supported: the generated
+pytest config sets `pythonpath` to the absolute workspace root.
+
+Each Builder call receives one task, its source prefixes, and short completed-task
+summaries. Each accepted proposal is formatted and committed, then recorded in
+`JobState.checkpoint_shas`. Completed task IDs, current task ID, summaries, auto-added
+files, retry/split counts and total call count are persisted. Temporal recovery reuses
+completed stages and restores interrupted work to the latest saved checkpoint;
+portable workers also save a reconstructable bundle at each checkpoint.
+
+Missing task files produce `Create <file> covering: <task description and acceptance>`
+feedback before tests run. Optional quick-test results are recorded as advisory evidence;
+failures do not consume task retries or block later tasks. Once all tasks
+complete, one full verification pass runs. A failed full pass reopens the owner of a
+file named in the failure output (or the last task), then runs full verification again
+after repair. Completed unrelated tasks are not replayed. Flag assurance, review and
+ship governance retain their existing order and policy.
+
+Policy controls:
+
+```yaml
+builder_max_output_tokens: 6000
+per_task_retries: 3
+max_job_attempts: 25
+split_attempts: 3
+```
+
+`per_task_retries` counts corrections after the initial call, shared across apply,
+missing-file and full-verification failures. Cut-off output asks for a
+smaller part of the same task. Valid partial proposals set `task_complete=false` and
+are checkpointed. Split continuations never consume the task retry budget. Exceeding
+`split_attempts` stops the job with a split-cap error. Every Builder call, including interrupted calls,
+counts toward `max_job_attempts`. Review and governance keep their separate caps
+under `max_retries`; legacy build/verify/missing-file counters are no longer used.

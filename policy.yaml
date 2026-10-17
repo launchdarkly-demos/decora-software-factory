@@ -70,15 +70,34 @@ approvals:
     - high
 
 flags:
-  enabled: false  # Deferred: no flag audits, provisioning, or rollout gates.
-  required_for_user_facing: false
-  required_for_risk: []
-  required_for_large_changes: false
-  required_for_important_ux: false
+  enabled: false
+  key_pattern: '^decora-[a-z0-9-]+$'
   must_default_off: true
 
+rollout_rules:
+  user_facing_behavior: {flag: required, guarded_rollout: required, human_pause: false}
+  ui_cosmetic: {flag: optional, guarded_rollout: none, human_pause: false}
+  backend_internal:
+    flag: required
+    guarded_rollout: none
+    human_pause: false
+    required_for_risk: [medium, high]
+    required_for_large_change: true
+  data_migration: {flag: required, guarded_rollout: required, human_pause: true}
+  refactor: {flag: forbidden, guarded_rollout: none, human_pause: false}
+  docs_only: {flag: forbidden, guarded_rollout: none, human_pause: false}
+  tests_only: {flag: forbidden, guarded_rollout: none, human_pause: false}
+  config_ci: {flag: forbidden, guarded_rollout: none, human_pause: false}
+  dependency: {flag: forbidden, guarded_rollout: none, human_pause: false}
+guarded_rollout:
+  default_metric_key: ""  # TODO: owner must choose an allowed rollout metric.
+  allowed_metric_keys: []  # Owner-maintained LaunchDarkly metric keys.
+  min_sample_size: 100
+  rollback_on_regression: true
+  stages: [1, 5, 25, 50, 100]
+
 launchdarkly:
-  project_key: decor-agent-demo-v2
+  project_key: alexis-interior-design-demo-app
   environments:
     - test
     - production

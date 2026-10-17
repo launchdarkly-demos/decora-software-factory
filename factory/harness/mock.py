@@ -17,6 +17,7 @@ class MockHarness:
         feature = job.feature
         if _concrete(job):
             plan = ImplementationPlan(
+                change_class="user_facing_behavior",
                 summary=feature.summary,
                 files=["app/flags.py", "app/room_mood.py", "server.py", "test_room_mood_flag.py"],
                 steps=[

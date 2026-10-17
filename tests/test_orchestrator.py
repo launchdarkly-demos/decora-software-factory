@@ -418,7 +418,7 @@ def test_room_mood_demo_loop_on_a_worktree(tmp_path: Path) -> None:
     assert "FLAG_DEFAULT = False" in diff
     assert "FLAG_DEFAULT = True" not in diff
     assert "Draft pull request" in body
-    assert "Live LaunchDarkly check skipped" in body
+    assert "Flag was not provisioned/verified" in body
     assert job.launchdarkly is not None and job.launchdarkly.mode == "offline"
     assert job.pr is not None and job.pr.dry_run and job.pr.url is None
     assert job.usage.input_tokens > 0

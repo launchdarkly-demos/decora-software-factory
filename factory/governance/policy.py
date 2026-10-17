@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Literal, cast, get_args
 
 import yaml
 from pydantic import BaseModel, Field
 
 from factory.errors import GovernanceError
-from factory.models import ImplementationPlan, JobState
+from factory.models import ChangeClass, ImplementationPlan, JobState
 
 
 class ApprovalRules(BaseModel):
@@ -17,11 +19,36 @@ class ApprovalRules(BaseModel):
 
 class FlagRules(BaseModel):
     enabled: bool = False
-    required_for_user_facing: bool = False
-    required_for_risk: list[str] = Field(default_factory=lambda: ["medium", "high"])
-    required_for_large_changes: bool = True
-    required_for_important_ux: bool = True
+    key_pattern: str = r"^decora-[a-z0-9-]+$"
     must_default_off: bool = True
+
+
+class RolloutRule(BaseModel):
+    flag: Literal["required", "optional", "forbidden"]
+    guarded_rollout: Literal["required", "optional", "none"] = "none"
+    human_pause: bool = False
+    required_for_risk: list[str] | None = None
+    required_for_large_change: bool = False
+
+
+def default_rollout_rules() -> dict[str, RolloutRule]:
+    rules = {name: RolloutRule(flag="forbidden") for name in get_args(ChangeClass)}
+    rules.update(
+        user_facing_behavior=RolloutRule(flag="required", guarded_rollout="required"),
+        data_migration=RolloutRule(flag="required", guarded_rollout="required", human_pause=True),
+        backend_internal=RolloutRule(flag="required", required_for_risk=["medium", "high"],
+                                    required_for_large_change=True),
+        ui_cosmetic=RolloutRule(flag="optional"),
+    )
+    return rules
+
+
+class GuardedRolloutRules(BaseModel):
+    default_metric_key: str = ""
+    allowed_metric_keys: list[str] = Field(default_factory=list)
+    min_sample_size: int = Field(default=100, ge=1)
+    rollback_on_regression: bool = True
+    stages: list[int] = Field(default_factory=lambda: [1, 5, 25, 50, 100])
 
 
 class PullRequestRules(BaseModel):
@@ -30,7 +57,7 @@ class PullRequestRules(BaseModel):
 
 
 class LaunchDarklyRules(BaseModel):
-    project_key: str = "decor-agent-demo-v2"
+    project_key: str = "alexis-interior-design-demo-app"
     environments: list[str] = Field(default_factory=lambda: ["test", "production"])
     production_environment: str = "production"
 
@@ -67,6 +94,8 @@ class Policy(BaseModel):
     )
     deny_paths: list[str] = Field(default_factory=lambda: [".env", "app/pim/**"])
     approvals: ApprovalRules = Field(default_factory=ApprovalRules)
+    rollout_rules: dict[str, RolloutRule] = Field(default_factory=default_rollout_rules)
+    guarded_rollout: GuardedRolloutRules = Field(default_factory=GuardedRolloutRules)
     flags: FlagRules = Field(default_factory=FlagRules)
     launchdarkly: LaunchDarklyRules = Field(default_factory=LaunchDarklyRules)
     pull_request: PullRequestRules = Field(default_factory=PullRequestRules)
@@ -115,21 +144,56 @@ def load_policy(path: Path) -> Policy:
     return Policy.model_validate(data)
 
 
-def flag_required(policy: Policy, job: JobState, plan: ImplementationPlan | None = None) -> bool:
-    """One rollout decision shared by planning, verification, provisioning and shipping."""
-    if not policy.flags.enabled:
-        return False
+def change_class(job: JobState, plan: ImplementationPlan) -> ChangeClass | None:
+    labels = [label.removeprefix("factory:class/") for label in job.feature.labels
+              if label.startswith("factory:class/")]
+    overrides = set(labels + ([job.feature.change_class] if job.feature.change_class else []))
+    if overrides:
+        return (cast(ChangeClass, next(iter(overrides)))
+                if len(overrides) == 1 and overrides <= set(get_args(ChangeClass)) else None)
+    if plan.requires_migration:
+        return "data_migration"
+    if plan.change_class:
+        return plan.change_class
+    if plan.files and all(path.startswith("docs/") or path.endswith(".md") for path in plan.files):
+        return "docs_only"
+    if plan.files and all(path.startswith("tests/") for path in plan.files):
+        return "tests_only"
+    return None
+
+
+def flag_keys(job: JobState, plan: ImplementationPlan | None = None) -> set[str]:
     plan = plan or job.plan
-    return bool(
-        job.feature.flag_key
-        or (job.feature.user_facing and policy.flags.required_for_user_facing)
-        or (plan and (
-            plan.flag_key
-            or plan.risk in policy.flags.required_for_risk
-            or (plan.large_change and policy.flags.required_for_large_changes)
-            or (plan.important_ux_change and policy.flags.required_for_important_ux)
-        ))
-    )
+    values = [job.feature.flag_key, plan.flag_key if plan else None]
+    return {key for value in values if value for key in re.split(r"[\s,;]+", value.strip())
+            if key and key != "replace-with-your-flag-key"}
+
+
+def selected_flag_key(job: JobState) -> str | None:
+    keys = flag_keys(job)
+    return next(iter(keys)) if len(keys) == 1 else None
+
+
+def flag_required(policy: Policy, job: JobState, plan: ImplementationPlan | None = None) -> bool:
+    """Whether this job needs flag provisioning and audit, including an optional opt-in."""
+    plan = plan or job.plan
+    if not policy.flags.enabled or plan is None:
+        return False
+    rule = policy.rollout_rules.get(change_class(job, plan) or "")
+    if rule is None or rule.flag == "forbidden":
+        return False
+    required = rule.flag == "required"
+    if rule.required_for_risk is not None:
+        required = (plan.risk in rule.required_for_risk
+                    or (rule.required_for_large_change and plan.large_change))
+    return required or bool(flag_keys(job, plan))
+
+
+def guarded_rollout_required(policy: Policy, job: JobState) -> bool:
+    if not policy.flags.enabled or job.plan is None:
+        return False
+    rule = policy.rollout_rules.get(change_class(job, job.plan) or "")
+    return bool(rule and rule.guarded_rollout == "required")
 
 
 def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Decision:
@@ -141,6 +205,32 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
             reason="What behavior and acceptance checks should this change implement?",
             resume_stage="plan",
         )
+    classification = change_class(job, plan)
+    if classification is None or classification not in policy.rollout_rules:
+        return Decision(pause=True, reason="Which change_class applies to this change? Choose "
+                        + ", ".join(get_args(ChangeClass)) + ". Resolve conflicting class overrides.",
+                        resume_stage="plan")
+    plan.change_class = classification
+    keys = flag_keys(job, plan)
+    if policy.flags.enabled:
+        if len(keys) > 1:
+            return Decision(pause=True, retry_plan=True, reason="Use one flag key per job; reuse the issue's key.",
+                            resume_stage="plan")
+        if any(not re.fullmatch(policy.flags.key_pattern, key) for key in keys):
+            return Decision(pause=True, retry_plan=True, reason="Flag key must match " + policy.flags.key_pattern,
+                            resume_stage="plan")
+        rule = policy.rollout_rules[classification]
+        if rule.guarded_rollout == "required" or plan.guarded_rollout_metric:
+            metric = plan.guarded_rollout_metric or policy.guarded_rollout.default_metric_key
+            if not metric:
+                return Decision(pause=True, reason="Which allowed metric should guard this rollout? "
+                                "Configure default_metric_key or name a guarded_rollout_metric in the plan.",
+                                resume_stage="plan")
+            if metric not in policy.guarded_rollout.allowed_metric_keys:
+                return Decision(pause=True, retry_plan=True,
+                                reason="Guarded rollout metric must be in allowed_metric_keys.",
+                                resume_stage="plan")
+            plan.guarded_rollout_metric = metric
     repairs = task_problems(plan)
     if job.context and job.context.file_inventory:
         missing = set(plan.context_files) - set(job.context.file_inventory)
@@ -166,12 +256,12 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
         return Decision(pause=True, reason=question, resume_stage="plan")
     if (
         flag_required(policy, job, plan)
-        and not (job.feature.flag_key or plan.flag_key)
+        and not keys
     ):
         return Decision(
             pause=True,
-            reason="This change needs a default-off LaunchDarkly flag because of its risk, scope, "
-                   "UX impact, or explicit rollout request.",
+            retry_plan=True,
+            reason="This change class needs one default-off LaunchDarkly flag key.",
             resume_stage="plan",
         )
     if flag_required(policy, job, plan) and policy.flags.must_default_off and plan.flag_default is True:
@@ -180,8 +270,8 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
             reason="The plan turns the flag on by default. Policy requires the code default off.",
             resume_stage="plan",
         )
-    if (plan.requires_migration or plan.risk in policy.approvals.pause_on_risk
-            or plan.risk not in policy.approvals.auto_approve_risk):
+    if (plan.requires_migration or policy.rollout_rules[classification].human_pause
+            or plan.risk in policy.approvals.pause_on_risk):
         return Decision(
             pause=True,
             reason=f"Risk {plan.risk} or data migration needs human review of the saved implementation plan. "
@@ -195,7 +285,7 @@ def review_ship(policy: Policy, job: JobState, diff: str) -> Decision:
     from factory.governance.flags import audit_flag
 
     if flag_required(policy, job):
-        flag_key = job.feature.flag_key or (job.plan.flag_key if job.plan else None)
+        flag_key = selected_flag_key(job)
         problems = audit_flag(diff, flag_key, must_default_off=policy.flags.must_default_off)
         if problems:
             return Decision(retry_build=True, reason="; ".join(problems))

@@ -153,6 +153,9 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
             lines.append("Context files the planner saw:")
             for path in plan.context_files:
                 lines.append(f"- `{path}`")
+    if job.auto_added_files:
+        lines.extend(["", "## Files added to the plan automatically", ""])
+        lines.extend(f"- `{path}`" for path in job.auto_added_files)
     lines.extend(["", "## Test evidence", ""])
     if not job.verify_runs:
         lines.append("No verification run was recorded.")
@@ -180,11 +183,13 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
     for risk in risks:
         lines.append(f"- {risk}")
     lines.extend(["", "## Retries", ""])
-    if job.retries:
-        for name, count in sorted(job.retries.items()):
-            lines.append(f"- {name}: {count}")
-    else:
-        lines.append("- none")
+    lines.append(f"- Builder calls: {job.builder_calls}")
+    for task_id, count in sorted(job.task_retries.items()):
+        lines.append(f"- Task {task_id} corrections: {count}")
+    for task_id, count in sorted(job.task_split_attempts.items()):
+        lines.append(f"- Task {task_id} split continuations: {count}")
+    for name, count in sorted(job.retries.items()):
+        lines.append(f"- {name}: {count}")
     lines.extend(
         [
             "",

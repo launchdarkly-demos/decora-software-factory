@@ -8,7 +8,7 @@ from pathlib import Path
 
 from factory.clock import Clock, SystemClock
 from factory.context.repo import analyze_repo
-from factory.errors import FactoryError, GovernanceError, RecipeError
+from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, RecipeError
 from factory.execution.portable import PortableWorkspace
 from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import Policy, review_plan, review_ship
@@ -20,6 +20,7 @@ from factory.observability.trace import JsonLog, Tracer
 from factory.orchestrator.graph import COMPONENTS, assert_legal
 from factory.orchestrator.store import JobStore
 from factory.publish.pr import Publisher
+from factory.task_queue import current_task, missing_file_feedback, reopen_task
 from factory.tools.layer import ToolLayer
 from factory.verification.gate import VerificationGate
 
@@ -146,6 +147,8 @@ class Factory:
         with self.tracer.span(f"stage.{current.value}", COMPONENTS[current], job_id=job.id):
             transition = self._bounded(job, handler)
         self._apply(job, current, transition)
+        if current == Stage.BUILD:
+            job.completed_builder_calls = job.builder_calls
         self.store.save(job)
 
     def finish(self, job: JobState) -> None:
@@ -228,6 +231,9 @@ class Factory:
             return Transition(stage=Stage.FAILED, detail="no context", error="no context")
         plan = self.harness.plan(job, job.context)
         job.plan = plan
+        job.current_task_id = None
+        job.completed_task_ids.clear()
+        job.task_summaries.clear()
         self._write_model(job, "implementation_plan.json", plan)
         return Transition(stage=Stage.GOVERN_PLAN, detail=f"recipe {plan.recipe} risk {plan.risk}")
 
@@ -264,22 +270,71 @@ class Factory:
             job.worktree = info
             self._emit(job, "execution", f"worktree {info.path}", branch=info.branch)
         tools = self._tools(job)
+        task = current_task(job)
+        if task is None:
+            return Transition(stage=Stage.VERIFY, detail="all tasks checkpointed")
+        if job.builder_calls >= self.policy.max_job_attempts:
+            return Transition(stage=Stage.FAILED, detail="Builder job attempt cap exhausted",
+                              error="Builder job attempt cap exhausted")
+        job.builder_calls += 1
+        # Persist the call budget and task before invoking an external provider.
+        self.store.save(job)
         try:
             result = self.harness.build(job, tools)
         except RecipeError as exc:
             return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=Stage.PLAN)
         except GovernanceError as exc:
             return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+        except IncompleteBuildError as exc:
+            return self._task_correction(job, str(exc), split=True)
         except FactoryError as exc:
-            used = job.retries.get("build", 0)
-            if used >= self.policy.max_retries.get("build", 3):
-                return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
-            job.retries["build"] = used + 1
-            job.govern_feedback = str(exc)
-            return Transition(stage=Stage.BUILD, detail=str(exc))
+            return self._task_correction(job, str(exc))
         job.builds.append(result)
+        job.checkpoint_shas.setdefault(task.id, []).append(result.commit)
+        job.task_summaries[task.id] = result.summary[:600]
         self._write_model(job, "build.json", result)
-        return Transition(stage=Stage.VERIFY, detail=result.summary)
+        self._write_model(job, "implementation_plan.json", job.plan)
+        if isinstance(self.execution, PortableWorkspace) and job.worktree is not None:
+            self.execution.checkpoint(job.worktree)
+        # Save applied parts even if a quick check fails or the task needs more calls.
+        self.store.save(job)
+        if result.correction:
+            return self._task_correction(job, result.correction)
+        if not result.task_complete:
+            return self._task_correction(job, "Continue the remaining work for this task only. "
+                                         "Return another smaller part with task_complete=false if necessary.",
+                                         split=True)
+        missing = [path for path in task.files if not tools._resolve(path).is_file()]
+        if missing:
+            return self._task_correction(job, "\n".join(missing_file_feedback(job, path) for path in missing))
+        if task.quick_test_targets:
+            quick = VerificationGate(self.target_repo, self.home).run_quick(job, tools, task.quick_test_targets)
+            job.quick_verify_runs.setdefault(task.id, []).append(quick)
+            if not quick.passed:
+                return self._task_correction(job, quick.actionable)
+        if task.id not in job.completed_task_ids:
+            job.completed_task_ids.append(task.id)
+        job.current_task_id = None
+        job.govern_feedback = None
+        next_task = current_task(job)
+        return Transition(stage=Stage.BUILD if next_task else Stage.VERIFY,
+                          detail=f"checkpointed task {task.id}: {result.summary}")
+
+    def _task_correction(self, job: JobState, feedback: str, *, split: bool = False) -> Transition:
+        task = current_task(job)
+        assert task is not None
+        job.govern_feedback = feedback
+        if split:
+            used_splits = job.task_split_attempts.get(task.id, 0)
+            job.task_split_attempts[task.id] = used_splits + 1
+            if used_splits < self.policy.split_attempts:
+                return Transition(stage=Stage.BUILD, detail=feedback)
+        used = job.task_retries.get(task.id, 0)
+        if used >= self.policy.per_task_retries:
+            detail = f"Task {task.id} retries exhausted: {feedback}"
+            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+        job.task_retries[task.id] = used + 1
+        return Transition(stage=Stage.BUILD, detail=feedback)
 
     def _verify(self, job: JobState) -> Transition:
         tools = self._tools(job)
@@ -297,15 +352,8 @@ class Factory:
                 detail=result.actionable,
                 resume_stage=Stage.PLAN,
             )
-        used = job.retries.get("verify", 0)
-        if used >= self.policy.max_retries.get("verify", 2):
-            return Transition(
-                stage=Stage.FAILED,
-                detail="verification retries exhausted",
-                error="verification retries exhausted\n" + result.actionable[-500:],
-            )
-        job.retries["verify"] = used + 1
-        return Transition(stage=Stage.BUILD, detail=f"verification {result.classification}")
+        reopen_task(job, result.actionable)
+        return self._task_correction(job, result.actionable)
 
     def _ensure_flag(self, job: JobState) -> Transition:
         try:
@@ -332,9 +380,10 @@ class Factory:
             return Transition(stage=Stage.AWAIT_HUMAN, detail=report.summary, resume_stage=Stage.PLAN)
         used = job.retries.get("review", 0)
         if used >= self.policy.max_retries.get("review", 1):
+            reopen_task(job, report.summary)
             return Transition(stage=Stage.AWAIT_HUMAN, detail=report.summary, resume_stage=Stage.BUILD)
         job.retries["review"] = used + 1
-        job.govern_feedback = report.summary
+        reopen_task(job, report.summary)
         return Transition(stage=Stage.BUILD, detail=report.summary)
 
     def _govern_ship(self, job: JobState) -> Transition:
@@ -349,7 +398,7 @@ class Factory:
             if used >= self.policy.max_retries.get("govern", 1):
                 return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
             job.retries["govern"] = used + 1
-            job.govern_feedback = decision.reason
+            reopen_task(job, decision.reason)
             return Transition(stage=Stage.BUILD, detail=decision.reason)
         return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
 

@@ -1,6 +1,7 @@
 """Resolve maintainer-owned checks from planned or actual changed paths."""
 from __future__ import annotations
 
+import keyword
 from fnmatch import fnmatch
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -47,6 +48,10 @@ def prerequisites(policy: Policy, plan: ImplementationPlan, paths: list[str]) ->
 def task_problems(plan: ImplementationPlan) -> list[str]:
     seen: set[str] = set()
     errors: list[str] = []
+    for path in plan.files:
+        module = PurePosixPath(path)
+        if module.suffix == '.py' and (not module.stem.isidentifier() or keyword.iskeyword(module.stem)):
+            errors.append(f'Python module must have a valid identifier: {path}')
     for task in plan.tasks:
         if not task.id or task.id in seen:
             errors.append(f"Task ID must be nonempty and unique: {task.id!r}.")
@@ -60,6 +65,10 @@ def task_problems(plan: ImplementationPlan) -> list[str]:
         if not task.acceptance:
             errors.append(f"Task {task.id} needs acceptance checks.")
         seen.add(task.id)
+    if plan.tasks:
+        unowned = set(plan.files) - {path for task in plan.tasks for path in task.files}
+        if unowned:
+            errors.append('Assign every planned file to a task: ' + ', '.join(sorted(unowned)))
     if plan.recipe == 'general' and not plan.tasks:
         errors.append('A general implementation plan must break the work into concrete tasks.')
     return errors

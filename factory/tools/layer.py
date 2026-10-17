@@ -9,6 +9,7 @@ from factory.errors import FactoryError, GovernanceError
 from factory.gitcmd import git_env
 from factory.governance.policy import Policy
 from factory.models import CommandReport
+from factory.tools.safety import check_content
 
 
 class ToolLayer:
@@ -55,6 +56,7 @@ class ToolLayer:
 
     def write(self, rel: str, content: str) -> None:
         path = self._resolve(rel)
+        check_content(content)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
@@ -102,10 +104,13 @@ class ToolLayer:
     def _resolve(self, rel: str) -> Path:
         if rel.startswith("/") or rel.startswith("~"):
             raise GovernanceError(f"path must stay inside the worktree: {rel}")
+        if ".." in Path(rel.replace("\\", "/")).parts:
+            raise GovernanceError(f"path traversal is not allowed: {rel}")
         self.policy.check_path(rel)
         path = (self.worktree / rel).resolve()
         if not path.is_relative_to(self.worktree):
             raise GovernanceError(f"path escapes the worktree: {rel}")
+        self.policy.check_path(path.relative_to(self.worktree).as_posix())
         return path
 
     def _env(self) -> dict[str, str]:
@@ -115,6 +120,7 @@ class ToolLayer:
         env["GIT_CEILING_DIRECTORIES"] = str(self.worktree.parent)
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTHONPATH", None)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["DECORA_PERSIST"] = "0"
         env["PYTHON_DOTENV_DISABLED"] = "1"
         env.update(self.policy.command_environment)

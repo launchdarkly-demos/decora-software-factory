@@ -3,7 +3,7 @@ import json
 import pytest
 
 from factory.context.repo import RepositoryReader, analyze_repo
-from factory.errors import FactoryError, GovernanceError
+from factory.errors import GovernanceError
 from factory.governance.policy import VerificationProfile, review_plan
 from factory.models import BuildProposal, FileEdit, PlanTask, WorktreeInfo
 from factory.verification.profiles import prerequisites, task_problems
@@ -69,23 +69,20 @@ def test_migration_needs_plan_checks_and_human_approval(tmp_path):
     assert decision.pause and decision.resume_stage == 'build'
 
 
-def test_unlisted_file_or_existing_write_rejected_before_any_edit(tmp_path):
+def test_safe_unlisted_file_and_existing_write_are_applied(tmp_path):
     from factory.agents.apply import apply_proposal
     from factory.tools.layer import ToolLayer
     repo = init_repo(tmp_path / 'repo')
     tools = ToolLayer(repo, policy())
-    job = bare_job(tmp_path, plan=low_plan(files=['allowed.py', 'server.py']),
+    job = bare_job(tmp_path, plan=low_plan(files=['server.py']),
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
-    proposal = BuildProposal(summary='bad', commit_message='bad', edits=[
-        FileEdit(path='allowed.py', kind='write', content='ok'),
-        FileEdit(path='outside.py', kind='write', content='bad')])
-    with pytest.raises(GovernanceError, match='outside approved'):
-        apply_proposal(job, tools, proposal)
-    assert not (repo / 'allowed.py').exists()
-    proposal.edits[-1] = FileEdit(path='server.py', kind='write', content='overwrite')
-    with pytest.raises(FactoryError, match='Use replace'):
-        apply_proposal(job, tools, proposal)
-    assert not (repo / 'allowed.py').exists()
+    proposal = BuildProposal(summary='update', commit_message='update', edits=[
+        FileEdit(path='outside.py', kind='write', content='VALUE = 1\n'),
+        FileEdit(path='server.py', kind='write', content='VALUE = 2\n')])
+    apply_proposal(job, tools, proposal)
+    assert tools.read('server.py') == 'VALUE = 2\n'
+    assert job.auto_added_files == ['outside.py']
+    assert 'outside.py' in job.plan.files
 
 
 def test_preview_saves_plan_without_builder_or_target_edits(tmp_path):
@@ -165,7 +162,7 @@ def test_decora_profiles_fail_when_target_suites_are_missing(tmp_path):
     base = tools.head_sha()
     tools.write('web/studio.html', '<h1>Homes</h1>')
     tools.commit('Frontend change', ['web/studio.html'])
-    plan = low_plan(flag_key=None, test_targets=[], verification_profiles=['migration'])
+    plan = low_plan(files=['web/studio.html'], flag_key=None, test_targets=[], verification_profiles=['migration'])
     job = bare_job(tmp_path, plan=plan,
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=base))
     result = VerificationGate(repo, tmp_path / 'home').run(job, tools)

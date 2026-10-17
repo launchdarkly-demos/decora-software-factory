@@ -5,14 +5,15 @@ import json
 import os
 from pathlib import Path
 
-from factory.agents.apply import apply_proposal
+from factory.agents.apply import apply_proposal, check_proposal_safety
 from factory.agents.prompts import BUILDER_INSTRUCTIONS, PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
 from factory.context.repo import RepositoryReader
-from factory.errors import FactoryError
-from factory.governance.policy import Policy
+from factory.errors import FactoryError, GovernanceError, IncompleteBuildError
+from factory.governance.policy import Policy, flag_required, selected_flag_key
 from factory.harness.repository_tools import repository_tools
 from factory.harness.tokens import charge_provider
 from factory.models import BuildProposal, ImplementationPlan, JobState, RepoContext, ReviewReport
+from factory.task_queue import current_task
 from factory.tools.layer import ToolLayer
 
 
@@ -70,19 +71,21 @@ class OpenAIAgentsHarness:
     def build(self, job: JobState, tools: ToolLayer):
         from agents import Agent
 
-        latest = job.latest_verify()
+        task = current_task(job)
+        if task is None:
+            raise FactoryError("No pending Builder task")
         files = _file_excerpts(job, tools)
         observed = {item["path"]: [item["text"]] for item in files}
         payload = json.dumps(
             {
-                "feature": _feature_for_model(job),
-                "plan": job.plan.model_dump() if job.plan else None,
+                "task": task.model_dump(),
+                "completed_tasks": [{"id": task_id, "summary": job.task_summaries.get(task_id, "")[:600]}
+                                    for task_id in job.completed_task_ids],
                 "files": files,
-                "verification": latest.actionable if latest else "",
                 "govern_feedback": job.govern_feedback,
-                "review_feedback": job.review.model_dump() if job.review else None,
-                "human_answers": job.human_answers,
                 "flag_policy": self.policy.flags.model_dump(),
+                "flag_context": {"key": selected_flag_key(job), "default": False,
+                                 "required": flag_required(self.policy, job)},
             }
         )
         from agents import ModelSettings
@@ -93,16 +96,21 @@ class OpenAIAgentsHarness:
             output_type=BuildProposal,
             tools=repository_tools(tools.worktree, tools.policy, observed=observed),
             model=self.model,
-            model_settings=ModelSettings(max_tokens=6000),
+            model_settings=ModelSettings(max_tokens=self.policy.builder_max_output_tokens),
         )
         try:
             result = _run_agent(agent, payload)
+        except GovernanceError:
+            raise
         except Exception as exc:
-            detail = _builder_failure(exc)
-            raise FactoryError(detail) from None
+            raise _builder_failure(exc) from None
         charge_provider(job, result, payload, "")
         output = result.final_output
-        proposal = output if isinstance(output, BuildProposal) else BuildProposal.model_validate(output)
+        try:
+            proposal = output if isinstance(output, BuildProposal) else BuildProposal.model_validate(output)
+        except ValueError:
+            raise IncompleteBuildError("Builder output incomplete; split this task into smaller parts.") from None
+        check_proposal_safety(tools, proposal)
         _reject_oversized_edits(proposal)
         for edit in proposal.edits:
             if edit.kind == "replace" and not any(edit.old in text for text in observed.get(edit.path, [])):
@@ -152,8 +160,9 @@ def _feature_for_model(job: JobState) -> dict[str, object]:
 def _file_excerpts(job: JobState, tools: ToolLayer) -> list[dict[str, str]]:
     names: list[str] = []
     if job.plan is not None:
-        names.extend(job.plan.files)
-        names.extend(job.plan.context_files)
+        task = current_task(job)
+        if task is not None:
+            names.extend(task.files)
     reader = RepositoryReader(tools.worktree, tools.policy)
     excerpts: list[dict[str, str]] = []
     budget = 40_000
@@ -180,11 +189,13 @@ def _reject_oversized_edits(proposal: BuildProposal) -> None:
             raise FactoryError(f"{edit.path}: use a nonempty, focused replace anchor and read exact source first.")
 
 
-def _builder_failure(exc: BaseException) -> str:
-    text = str(exc)
-    if "max_output_tokens" in text or "incomplete" in text:
-        return "Builder output hit the token limit. Use a short replace snippet, not the whole file."
-    return f"Builder call failed: {exc.__class__.__name__}"
+def _builder_failure(exc: BaseException) -> FactoryError:
+    text = str(exc).lower()
+    if any(marker in text for marker in ("max_output_tokens", "max_tokens", "incomplete", "token limit")):
+        return IncompleteBuildError(
+            "Builder output incomplete. Split this task: return a smaller part now with "
+            "task_complete=false; remaining work follows in the next call for the same task.")
+    return FactoryError(f"Builder call failed: {exc.__class__.__name__}")
 
 
 

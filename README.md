@@ -58,7 +58,8 @@ stateDiagram-v2
   GovernPlan --> Build: inside policy
   AwaitHuman --> Plan: clarified
   AwaitHuman --> Build: approved
-  Build --> Verify
+  Build --> Build: next task or correction
+  Build --> Verify: all tasks checkpointed
   Verify --> Build: tests or flag audit failed
   Verify --> EnsureFlag: passed
   EnsureFlag --> Review: off in production, or offline
@@ -342,7 +343,8 @@ planning guide below.
 The real Planner supports general tasks and produces ordered subtasks, dependencies,
 risks, assumptions, and migration plans. Repository discovery includes frontend code;
 all three real agents can inspect source through bounded read-only tools. The Builder
-must stay within the approved file list, and verification runs maintainer-defined
+works one task at a time, checkpoints each applied part, and automatically adds safe
+extra files to the plan. Full verification runs after all tasks, using maintainer-defined
 profiles in addition to Python checks. UI and migration work pause when their required
 profiles are missing. Use `factory plan` to preview an issue without building it.
 See [commands, verification configuration, and limits](docs/general-planning.md).

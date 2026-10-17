@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 from factory.governance.flags import audit_flag
 from factory.governance.policy import flag_required
 from factory.models import CommandReport, FailureClass, JobState, VerifyResult
+from factory.task_queue import missing_file_feedback
 from factory.tools.layer import ToolLayer
 from factory.verification.profiles import prerequisites, selected_profiles
 
@@ -24,6 +26,10 @@ class VerificationGate:
                 actionable="verification ran before a plan and a worktree existed",
                 classification="infra",
             )
+        missing = [path for path in job.plan.files if not tools._resolve(path).is_file()]
+        if missing:
+            return VerifyResult(passed=False, commands=[], classification="test",
+                                actionable="\n".join(missing_file_feedback(job, path) for path in missing))
         diff = tools.diff(job.worktree.base_sha)
         flag_key = job.feature.flag_key or job.plan.flag_key
         changed = tools.changed_files(job.worktree.base_sha)
@@ -77,18 +83,30 @@ class VerificationGate:
             classification=classification,
         )
 
-    def _pytest(self, job: JobState, tools: ToolLayer) -> list[CommandReport]:
+    def run_quick(self, job: JobState, tools: ToolLayer, targets: list[str]) -> VerifyResult:
+        commands = self._pytest(job, tools, targets)
+        failed = [report for report in commands if not report.passed]
+        return VerifyResult(passed=not failed, commands=commands,
+                            classification="test" if failed else "none",
+                            actionable="\n".join(report.output for report in failed) or "Quick tests passed")
+
+    def _pytest(self, job: JobState, tools: ToolLayer,
+                targets: list[str] | None = None) -> list[CommandReport]:
         assert job.plan is not None
-        targets = list(dict.fromkeys([*job.plan.test_targets, *tools.policy.regression_tests]))
+        if targets is None:
+            targets = list(dict.fromkeys([*job.plan.test_targets, *tools.policy.regression_tests]))
         if not targets:
             return []
         for target in targets:
             if target.startswith('-'):
                 raise ValueError('pytest targets must be repository paths, not options')
-            tools._resolve(target.split('::')[0])
+            path = target.split('::')[0]
+            if not tools._resolve(path).exists():
+                return [CommandReport(argv=self._pytest_bin() + targets, exit_code=4, passed=False,
+                                      output=missing_file_feedback(job, path))]
         ini = self.home / "runs" / job.id / "pytest-gate.ini"
         ini.parent.mkdir(parents=True, exist_ok=True)
-        ini.write_text("[pytest]\naddopts =\n")
+        ini.write_text(f"[pytest]\naddopts =\npythonpath = {shlex.quote(str(tools.worktree))}\n")
         argv = self._pytest_bin() + [
             "-q",
             "-p",

@@ -52,7 +52,25 @@ class StageActivities:
                 if previous:
                     job = JobState.model_validate(previous["job"])
                     if operation == "step" and job.stage == Stage.BUILD:
-                        self._restore_build(factory, job, previous["head"])
+                        # The stage may have committed and saved before the receipt was written.
+                        # Keep its task progress and budgets instead of replaying completed work.
+                        try:
+                            durable = factory.store.load(job.id)
+                        except FactoryError:
+                            durable = job
+                        if durable.completed_builder_calls > job.completed_builder_calls:
+                            if isinstance(factory.execution, PortableWorkspace) and durable.worktree is not None:
+                                factory.execution.ensure(factory.target_repo, durable.worktree)
+                            result = durable.model_dump(mode="json")
+                            _atomic_json(receipt, {"status": "done", "job": result})
+                            return result
+                        head = previous["head"]
+                        if durable.builder_calls > job.builder_calls:
+                            job = durable
+                            latest = job.latest_build()
+                            if latest is not None:
+                                head = latest.commit
+                        self._restore_build(factory, job, head)
                 if (isinstance(factory.execution, PortableWorkspace) and job.worktree is not None
                         and not job.worktree.removed and operation != "finish"):
                     factory.execution.ensure(factory.target_repo, job.worktree)

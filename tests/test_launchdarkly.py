@@ -32,7 +32,7 @@ from tests.support import (
 
 SECRET = "ld-test-token-value"
 FLAG_URL = (
-    "https://app.launchdarkly.com/projects/decor-agent-demo-v2/flags/"
+    "https://app.launchdarkly.com/projects/decor-agent-ai/flags/"
     "decor-room-mood/targeting?env=production"
 )
 
@@ -100,7 +100,7 @@ def test_client_scrubs_the_token_from_api_errors() -> None:
 
     client = LaunchDarklyClient(SECRET, urlopen=urlopen)
     with pytest.raises(FactoryError) as caught:
-        client.request("GET", "/flags/decor-agent-demo-v2/decor-room-mood")
+        client.request("GET", "/flags/decor-agent-ai/decor-room-mood")
     assert SECRET not in str(caught.value)
     assert "[redacted]" in str(caught.value)
 
@@ -127,7 +127,7 @@ def test_client_keeps_not_found_and_sends_semantic_patch() -> None:
     client = LaunchDarklyClient(SECRET, urlopen=urlopen)
     status, body = client.request(
         "PATCH",
-        "/flags/decor-agent-demo-v2/decor-room-mood",
+        "/flags/decor-agent-ai/decor-room-mood",
         {"instructions": [{"kind": "turnFlagOff"}]},
         semantic=True,
     )

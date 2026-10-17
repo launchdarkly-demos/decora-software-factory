@@ -96,7 +96,7 @@ guarded_rollout:
   stages: [1, 5, 25, 50, 100]
 
 launchdarkly:
-  project_key: decor-agent-demo-v2
+  project_key: decor-agent-ai
   environments:
     - test
     - production

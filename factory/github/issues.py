@@ -125,7 +125,8 @@ class IssueBridge:
             if not self.github.approved(issue, self.label):
                 continue
             # Freeze the issue text at submission; later comments/edits never change a running request.
-            feature = parse_issue_body(issue["title"], issue.get("body") or "", url=issue["html_url"])
+            feature = parse_issue_body(issue["title"], issue.get("body") or "", url=issue["html_url"],
+                                       labels=[item["name"] for item in issue.get("labels", [])])
             try:
                 await self.client.start_workflow(
                     FactoryWorkflow.run, feature.model_dump(mode="json"), id=job_id,

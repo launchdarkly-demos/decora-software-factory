@@ -68,8 +68,10 @@ def test_missing_planned_files_return_to_builder_before_verification(tmp_path: P
     repo = init_repo(tmp_path / "repo")
     test_path = "tests/test_legacy.py"
     fixture_path = "tests/fixtures/legacy.json"
+    # This synthetic helper/tests change does not migrate stored data or expose behavior.
+    # Low-risk backend_internal work is flag-optional under the change-class policy.
     plan = low_plan(files=["app/migration.py", test_path, fixture_path],
-                    test_targets=[test_path], flag_key=None)
+                    test_targets=[test_path], flag_key=None, change_class="backend_internal")
     plan.tasks = [PlanTask(
         id="migration-tests", description="Test legacy data preservation.",
         files=[test_path, fixture_path], acceptance=["Legacy room context keys survive."],
@@ -113,8 +115,10 @@ def test_missing_planned_files_return_to_builder_before_verification(tmp_path: P
     assert job.retries.get("verify", 0) == 0
     assert job.retries["missing_files"] == 1
     assert factory._build(job).stage == Stage.VERIFY
-    assert factory._verify(job).stage == Stage.ENSURE_FLAG
+    assert factory._verify(job).stage == Stage.ENSURE_FLAG, job.latest_verify().actionable
     assert job.latest_verify().passed
+    assert job.latest_verify().commands
+    assert job.retries == {"missing_files": 1}
 
 
 def test_multitask_build_finishes_before_full_verification(tmp_path: Path) -> None:
@@ -123,7 +127,9 @@ def test_multitask_build_finishes_before_full_verification(tmp_path: Path) -> No
 
     repo = init_repo(tmp_path / "repo")
     paths = ["README.md", "app/migration.py", "tests/fixtures/legacy.json", "tests/test_legacy.py"]
-    plan = low_plan(files=paths, test_targets=[paths[-1]], flag_key=None)
+    # A pure dict-copy helper and synthetic fixture need no stored-data migration.
+    plan = low_plan(files=paths, test_targets=[paths[-1]], flag_key=None,
+                    change_class="backend_internal")
     plan.tasks = [
         PlanTask(id=f"T{i}", description=f"Complete {path}", files=[path],
                  depends_on=[f"T{i - 1}"] if i > 1 else [], acceptance=[f"{path} is complete"])
@@ -158,7 +164,7 @@ def test_multitask_build_finishes_before_full_verification(tmp_path: Path) -> No
     harness = ScriptedHarness([plan], builds=[build_next_task])
     job = make_factory(tmp_path, repo, harness, policy=rules).run(feature())
 
-    assert job.stage == Stage.DONE, job.error
+    assert job.stage == Stage.DONE, job.error or job.question
     assert harness.build_calls == 4
     assert job.retries == {"missing_files": 3}
     assert all(run.commands == [] for run in job.verify_runs[:-1])
@@ -418,7 +424,7 @@ def test_room_mood_demo_loop_on_a_worktree(tmp_path: Path) -> None:
     assert "FLAG_DEFAULT = False" in diff
     assert "FLAG_DEFAULT = True" not in diff
     assert "Draft pull request" in body
-    assert "Live LaunchDarkly check skipped" in body
+    assert "Flag was not provisioned/verified" in body
     assert job.launchdarkly is not None and job.launchdarkly.mode == "offline"
     assert job.pr is not None and job.pr.dry_run and job.pr.url is None
     assert job.usage.input_tokens > 0

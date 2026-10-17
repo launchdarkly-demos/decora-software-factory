@@ -105,7 +105,7 @@ key: not-a-real-flag
     # A small user-facing bug fix can proceed without a flag.
     from factory.governance.policy import review_plan
     from tests.support import bare_job, low_plan, policy
-    plan = low_plan().model_copy(update={'flag_key': None})
+    plan = low_plan().model_copy(update={'flag_key': None, 'change_class': 'ui_cosmetic'})
     job = bare_job(ROOT, feature=result)
     assert review_plan(policy(), plan, job).allowed
     assert review_plan(policy(), plan.model_copy(update={"risk": "high"}), job).pause
@@ -116,7 +116,7 @@ def test_unfilled_template_cannot_invent_acceptance_or_a_flag():
     result = parse_issue_body('My idea', template)
     assert result.acceptance == []
     assert result.flag_key is None
-    assert result.user_facing is True  # unsure never bypasses user-facing governance
+    assert result.user_facing is False  # classification decides rollout requirements
     assert result.change_type == 'unspecified'
     assert 'room title can be changed' not in result.summary
 

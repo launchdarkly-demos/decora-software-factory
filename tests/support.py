@@ -23,11 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def policy() -> Policy:
     rules = load_policy(ROOT / "policy.yaml")
-    # Existing flag-mode tests exercise the retained opt-in integration explicitly.
     rules.flags.enabled = True
-    rules.flags.required_for_risk = ["medium", "high"]
-    rules.flags.required_for_large_changes = True
-    rules.flags.required_for_important_ux = True
+    # Legacy demo fixtures use decor-*; production policy defaults to decora-*.
+    rules.flags.key_pattern = r"^decor-[a-z0-9-]+$"
+    rules.guarded_rollout.default_metric_key = "demo-errors"
+    rules.guarded_rollout.allowed_metric_keys = ["demo-errors"]
     return rules
 
 
@@ -80,6 +80,7 @@ def feature(**overrides) -> FeatureRequest:
 def low_plan(**overrides) -> ImplementationPlan:
     data = {
         "summary": "Add the change behind a flag",
+        "change_class": "user_facing_behavior",
         "files": ["app/room_mood.py"],
         "steps": ["add the flag"],
         "flag_key": "decor-room-mood",

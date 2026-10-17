@@ -9,7 +9,9 @@ title: ''
 For a bug, include reproduction steps and actual versus expected behavior. -->
 
 ## Change type
-<!-- Choose: feature, bug fix, refactor, documentation, infrastructure, or unsure. -->
+<!-- Choose: user_facing_behavior, ui_cosmetic, backend_internal, data_migration,
+refactor, docs_only, tests_only, config_ci, dependency, or unsure.
+Maintainers may override with factory:class/<name>. -->
 
 ## Acceptance criteria
 <!-- Add concrete, observable outcomes, one per line. Examples:
@@ -33,10 +35,12 @@ API examples, or browser checks. For UI work, describe expected visible behavior
 and include screenshots/mockups if helpful. Write "unsure" if you need help. -->
 
 ## Rollout
-<!-- Feature flags and guarded rollout are deferred. Describe compatibility and
-manual release considerations; do not require a new flag for this request. -->
-user-facing: unsure
-feature flag: no
+<!-- Behavioral features and migrations require a default-off flag and guarded rollout.
+Cosmetic changes may use a flag. Maintenance classes are exempt. A human starts rollout.
+Optionally name an EXISTING flag below to reuse it; leave blank to let planning choose. -->
+Flag key:
+<!-- Optional allowed LaunchDarkly metric for guarded rollout. -->
+Guarded rollout metric:
 
 
 ## Context
@@ -50,8 +54,5 @@ or design references. These are hints, not required implementation instructions.
 4. Follow the status comment; answer clarification through its local CLI command.
 5. Review and test the draft PR before merging.
 
-Current implementation reliably supports flag-controlled capability fields.
-Other request types may be proposed here but currently pause for human review;
-this template does not claim UI/browser or general-purpose implementation support.
 One issue starts one job. Edits/relabeling do not rerun it. Do not include secrets.
 -->

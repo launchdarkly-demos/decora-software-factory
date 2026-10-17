@@ -8,7 +8,7 @@ from pathlib import Path
 
 from factory.clock import Clock, SystemClock
 from factory.context.repo import analyze_repo
-from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, RecipeError
+from factory.errors import FactoryError, GovernanceError, IncompleteBuildError
 from factory.execution.portable import PortableWorkspace
 from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import Policy, review_plan, review_ship
@@ -281,14 +281,15 @@ class Factory:
         self.store.save(job)
         try:
             result = self.harness.build(job, tools)
-        except RecipeError as exc:
-            return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=Stage.PLAN)
         except GovernanceError as exc:
             return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
         except IncompleteBuildError as exc:
             return self._task_correction(job, str(exc), split=True)
         except FactoryError as exc:
             return self._task_correction(job, str(exc))
+        except (OSError, ValueError) as exc:
+            return self._task_correction(job, f"Builder could not apply this task ({type(exc).__name__}). "
+                                         "Check file paths and the proposal format, then correct this task.")
         job.builds.append(result)
         job.checkpoint_shas.setdefault(task.id, []).append(result.commit)
         job.task_summaries[task.id] = result.summary[:600]
@@ -308,10 +309,8 @@ class Factory:
         if missing:
             return self._task_correction(job, "\n".join(missing_file_feedback(job, path) for path in missing))
         if task.quick_test_targets:
-            quick = VerificationGate(self.target_repo, self.home).run_quick(job, tools, task.quick_test_targets)
+            quick = self.verifier.run_quick(job, tools, task.quick_test_targets)
             job.quick_verify_runs.setdefault(task.id, []).append(quick)
-            if not quick.passed:
-                return self._task_correction(job, quick.actionable)
         if task.id not in job.completed_task_ids:
             job.completed_task_ids.append(task.id)
         job.current_task_id = None
@@ -329,6 +328,8 @@ class Factory:
             job.task_split_attempts[task.id] = used_splits + 1
             if used_splits < self.policy.split_attempts:
                 return Transition(stage=Stage.BUILD, detail=feedback)
+            detail = f"Task {task.id} split cap exhausted: {feedback}"
+            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
         used = job.task_retries.get(task.id, 0)
         if used >= self.policy.per_task_retries:
             detail = f"Task {task.id} retries exhausted: {feedback}"
@@ -346,12 +347,6 @@ class Factory:
             diff_path.write_text(tools.diff(job.worktree.base_sha))
         if result.passed:
             return Transition(stage=Stage.ENSURE_FLAG, detail="verification passed")
-        if result.classification == "ambiguous":
-            return Transition(
-                stage=Stage.AWAIT_HUMAN,
-                detail=result.actionable,
-                resume_stage=Stage.PLAN,
-            )
         reopen_task(job, result.actionable)
         return self._task_correction(job, result.actionable)
 

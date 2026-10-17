@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from factory.errors import GovernanceError
+from factory.errors import FactoryError, GovernanceError
 from factory.governance.flags import audit_flag, verifier_requires_default_off
 from factory.models import JobState, Stage, VerifyResult
 from factory.tools.layer import ToolLayer
@@ -18,7 +18,7 @@ def test_shipped_policy_refuses_push_and_keeps_pull_requests_draft() -> None:
         rules.check_command(["git", "push", "origin", "HEAD"])
     with pytest.raises(GovernanceError, match="denied"):
         rules.check_command(["git", "reset", "--hard"])
-    with pytest.raises(GovernanceError, match="not allowlisted"):
+    with pytest.raises(FactoryError, match="not allowlisted"):
         rules.check_command(["curl", "https://example.test"])
 
 

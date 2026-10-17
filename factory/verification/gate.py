@@ -99,7 +99,8 @@ class VerificationGate:
             return []
         for target in targets:
             if target.startswith('-'):
-                raise ValueError('pytest targets must be repository paths, not options')
+                return [CommandReport(argv=self._pytest_bin() + targets, exit_code=4, passed=False,
+                                      output=f'Invalid pytest target {target!r}: use a repository path, not options')]
             path = target.split('::')[0]
             if not tools._resolve(path).exists():
                 return [CommandReport(argv=self._pytest_bin() + targets, exit_code=4, passed=False,

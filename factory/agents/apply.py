@@ -13,9 +13,16 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
         raise RuntimeError("build requires a worktree")
     if job.plan is None:
         raise GovernanceError("build requires an approved plan")
+    check_proposal_safety(tools, proposal)
     if not proposal.edits:
         raise FactoryError("Builder returned no edits. Read the approved files and return concrete changes.")
-    check_proposal_safety(tools, proposal)
+    task = current_task(job)
+    if task is not None:
+        unrelated = [edit.path for edit in proposal.edits
+                     if edit.path in job.plan.files and edit.path not in task.files]
+        if unrelated:
+            raise FactoryError(f"Implement only task {task.id}; these files belong to other tasks: "
+                               + ", ".join(unrelated))
     staged: dict[str, str] = {}
     for edit in proposal.edits:
         path = tools._resolve(edit.path)
@@ -39,7 +46,6 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
             staged[edit.path] = text.replace(edit.old, edit.new, 1)
     for content in staged.values():
         check_content(content)
-    task = current_task(job)
     for rel, text in staged.items():
         if rel not in job.plan.files:
             job.plan.files.append(rel)
@@ -79,9 +85,12 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
 
 def check_proposal_safety(tools: ToolLayer, proposal: BuildProposal) -> None:
     # Validate the entire proposal before corrections or plan expansion.
+    check_content(proposal.commit_message)
+    check_content(proposal.summary)
     for edit in proposal.edits:
         tools._resolve(edit.path)
         for value in (edit.content, edit.old, edit.new):
             check_content(value)
     for command in proposal.commands:
+        check_content(" ".join(command))
         tools.policy.check_command(command)

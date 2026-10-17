@@ -106,10 +106,14 @@ class OpenAIAgentsHarness:
             raise _builder_failure(exc) from None
         charge_provider(job, result, payload, "")
         output = result.final_output
+        for response in getattr(result, "raw_responses", []):
+            if getattr(response, "status", None) == "incomplete":
+                raise IncompleteBuildError("Builder output incomplete; split this task into smaller parts.")
         try:
             proposal = output if isinstance(output, BuildProposal) else BuildProposal.model_validate(output)
         except ValueError:
-            raise IncompleteBuildError("Builder output incomplete; split this task into smaller parts.") from None
+            raise FactoryError("Builder output has an invalid proposal format. "
+                               "Return a complete BuildProposal with concrete file edits.") from None
         check_proposal_safety(tools, proposal)
         _reject_oversized_edits(proposal)
         for edit in proposal.edits:

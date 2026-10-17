@@ -50,8 +50,10 @@ def task_problems(plan: ImplementationPlan) -> list[str]:
     errors: list[str] = []
     for path in plan.files:
         module = PurePosixPath(path)
-        if module.suffix == '.py' and (not module.stem.isidentifier() or keyword.iskeyword(module.stem)):
-            errors.append(f'Python module must have a valid identifier: {path}')
+        if module.suffix == '.py':
+            parts = [module.stem, *module.parts[:-1]]
+            if any(not part.isidentifier() or keyword.iskeyword(part) for part in parts):
+                errors.append(f'Python module and package names must have valid identifiers: {path}')
     for task in plan.tasks:
         if not task.id or task.id in seen:
             errors.append(f"Task ID must be nonempty and unique: {task.id!r}.")

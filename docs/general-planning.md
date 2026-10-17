@@ -197,7 +197,8 @@ completed stages and restores interrupted work to the latest saved checkpoint;
 portable workers also save a reconstructable bundle at each checkpoint.
 
 Missing task files produce `Create <file> covering: <task description and acceptance>`
-feedback before tests run. Quick-test failures return to the same task. Once all tasks
+feedback before tests run. Optional quick-test results are recorded as advisory evidence;
+failures do not consume task retries or block later tasks. Once all tasks
 complete, one full verification pass runs. A failed full pass reopens the owner of a
 file named in the failure output (or the last task), then runs full verification again
 after repair. Completed unrelated tasks are not replayed. Flag assurance, review and
@@ -213,9 +214,9 @@ split_attempts: 3
 ```
 
 `per_task_retries` counts corrections after the initial call, shared across apply,
-missing-file, quick-test and full-verification failures. Cut-off output asks for a
+missing-file and full-verification failures. Cut-off output asks for a
 smaller part of the same task. Valid partial proposals set `task_complete=false` and
-are checkpointed. The first `split_attempts` continuations per task do not consume
-its retry budget; later ones do. Every Builder call, including interrupted calls,
+are checkpointed. Split continuations never consume the task retry budget. Exceeding
+`split_attempts` stops the job with a split-cap error. Every Builder call, including interrupted calls,
 counts toward `max_job_attempts`. Review and governance keep their separate caps
 under `max_retries`; legacy build/verify/missing-file counters are no longer used.

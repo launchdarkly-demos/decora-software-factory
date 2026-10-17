@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 
 from factory.governance.flags import audit_flag
 from factory.governance.policy import flag_required, selected_flag_key
@@ -45,7 +46,7 @@ def review_deterministically(job: JobState, tools: ToolLayer) -> ReviewReport:
     if latest:
         evidence = latest.actionable[-500:] or ("passed" if latest.passed else "failed")
     findings.append(ReviewFinding(check="verification_log", passed=verify_ok, evidence=evidence))
-    test_files = [path for path in files if path.startswith("test_") and path.endswith(".py")]
+    test_files = [path for path in files if PurePosixPath(path).name.startswith("test_") and path.endswith(".py")]
     findings.append(
         ReviewFinding(
             check="tests_in_diff",

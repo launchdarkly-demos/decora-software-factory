@@ -93,7 +93,7 @@ def test_cutoff_and_partial_output_keep_same_task_without_retry(tmp_path):
     assert job.task_split_attempts == {'T0': 2}
 
 
-def test_split_cap_then_task_budget_and_overall_call_cap(tmp_path):
+def test_split_cap_is_separate_from_task_budget_and_overall_call_cap(tmp_path):
     repo = init_repo(tmp_path / 'repo')
 
     def cutoff(job, tools):
@@ -103,8 +103,9 @@ def test_split_cap_then_task_budget_and_overall_call_cap(tmp_path):
     job = make_factory(tmp_path, repo, ScriptedHarness([queued_plan(1)], builds=[cutoff]),
                        policy=rules).run(feature())
     assert job.stage == Stage.FAILED
-    assert job.builder_calls == 3
-    assert job.task_retries == {'T0': 1}
+    assert job.builder_calls == 2
+    assert job.task_retries == {}
+    assert 'split cap exhausted' in job.error
     rules.max_job_attempts = 1
     job = make_factory(tmp_path, repo, ScriptedHarness([queued_plan(1)], builds=[cutoff]),
                        policy=rules).run(feature())
@@ -154,10 +155,11 @@ def test_full_failure_routes_to_owning_task_without_replaying_other_tasks(tmp_pa
     assert len(job.verify_runs) == 2
 
 
-def test_quick_test_failure_returns_to_same_task_and_full_verification_waits(tmp_path):
+def test_optional_quick_failure_is_recorded_without_spending_retries(tmp_path):
     repo = init_repo(tmp_path / 'repo')
     plan = queued_plan(1)
     plan.tasks[0].quick_test_targets = ['tests/nested/test_value.py']
+    plan.test_targets = ['tests/nested/test_required.py']
 
     def build(job, tools):
         assert not job.verify_runs
@@ -165,15 +167,18 @@ def test_quick_test_failure_returns_to_same_task_and_full_verification_waits(tmp
         return apply_proposal(job, tools, BuildProposal(summary='Value and test', commit_message='Value and test',
             edits=[FileEdit(path='app/part_0.py', kind='write', content=f'VALUE = {value}\n'),
                    FileEdit(path='tests/nested/test_value.py', kind='write',
-                            content='from app.part_0 import VALUE\n\ndef test_value():\n    assert VALUE == 2\n')]))
+                            content='from app.part_0 import VALUE\n\ndef test_value():\n    assert VALUE == 2\n'),
+                   FileEdit(path='tests/nested/test_required.py', kind='write',
+                            content='from app.part_0 import VALUE\n\ndef test_required():\n    assert VALUE == 1\n')]))
 
     job = make_factory(tmp_path, repo, ScriptedHarness([plan], builds=[build]),
-                       verifier=ScriptedVerifier([passed_verify()])).run(feature())
+                       verifier=VerificationGate(repo, tmp_path / 'home')).run(feature())
     assert job.stage == Stage.DONE
-    assert job.task_retries == {'T0': 1}
-    assert [run.passed for run in job.quick_verify_runs['T0']] == [False, True]
+    assert job.task_retries == {}
+    assert job.builder_calls == 1
+    assert [run.passed for run in job.quick_verify_runs['T0']] == [False]
     assert len(job.verify_runs) == 1
-    assert job.auto_added_files == ['tests/nested/test_value.py']
+    assert job.auto_added_files == ['tests/nested/test_value.py', 'tests/nested/test_required.py']
     assert '## Files added to the plan automatically\n\n- `tests/nested/test_value.py`' in render_pr(job, '')
 
 
@@ -265,3 +270,29 @@ def test_failed_proposal_command_is_checkpointed_before_task_correction(tmp_path
     assert job.task_retries == {'T0': 1}
     assert len(job.checkpoint_shas['T0']) == 2
     assert len(job.verify_runs) == 1
+
+
+@pytest.mark.parametrize('prefix', ['./', 'absolute'])
+def test_failure_paths_route_to_owner_in_worktrees_with_spaces(tmp_path, prefix):
+    from factory.task_queue import reopen_task
+
+    work = tmp_path / 'worktree with spaces'
+    job = bare_job(tmp_path, plan=queued_plan(3), completed_task_ids=['T0', 'T1', 'T2'],
+                   worktree=WorktreeInfo(path=str(work), branch='main', base_sha='base'))
+    path = str(work) + '/' if prefix == 'absolute' else prefix
+    owner = reopen_task(job, f'File "{path}app/part_0.py", line 4: AssertionError')
+    assert owner.id == 'T0'
+    assert job.completed_task_ids == ['T1', 'T2']
+
+
+def test_proposal_cannot_implement_another_planned_task(tmp_path):
+    repo = init_repo(tmp_path / 'repo')
+    tools = ToolLayer(repo, policy())
+    job = bare_job(tmp_path, plan=queued_plan(2),
+                   worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
+    with pytest.raises(FactoryError, match='Implement only task T0'):
+        apply_proposal(job, tools, BuildProposal(summary='Too much', commit_message='Too much', edits=[
+            FileEdit(path='app/part_0.py', kind='write', content='VALUE = 1\n'),
+            FileEdit(path='app/part_1.py', kind='write', content='VALUE = 2\n')]))
+    assert not (repo / 'app/part_0.py').exists()
+    assert not job.auto_added_files

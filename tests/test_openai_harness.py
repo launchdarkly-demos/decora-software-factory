@@ -263,3 +263,23 @@ def test_sdk_cutoff_is_classified_as_a_split_request(tmp_path, monkeypatch):
         OpenAIAgentsHarness(policy=policy()).build(job, ToolLayer(repo, policy()))
     assert 'same task' in str(caught.value)
     assert 'replace snippet' not in str(caught.value)
+
+
+@pytest.mark.parametrize('truncated', [False, True])
+def test_invalid_complete_proposal_is_a_correction_but_provider_cutoff_is_a_split(tmp_path, monkeypatch, truncated):
+    import agents
+
+    from factory.errors import IncompleteBuildError
+    from factory.tools.layer import ToolLayer
+    from tests.support import init_repo, low_plan, policy
+
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
+    repo = init_repo(tmp_path / 'repo')
+    job = bare_job(tmp_path, plan=low_plan(files=['server.py']))
+    monkeypatch.setattr(agents.Runner, 'run_sync', lambda *args, **kwargs: SimpleNamespace(
+        final_output={'summary': 'missing required fields'},
+        raw_responses=[SimpleNamespace(status='incomplete' if truncated else 'completed')]))
+    with pytest.raises(FactoryError) as caught:
+        OpenAIAgentsHarness(policy=policy()).build(job, ToolLayer(repo, policy()))
+    assert isinstance(caught.value, IncompleteBuildError) == truncated
+    assert ('split' if truncated else 'invalid proposal format') in str(caught.value)

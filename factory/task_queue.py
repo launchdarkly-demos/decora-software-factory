@@ -36,8 +36,13 @@ def reopen_task(job: JobState, feedback: str) -> PlanTask:
     queue = tasks(job)
     # Prefer paths in failure output, including pytest's path::test_name notation.
     failure_output = '\n'.join(line for line in feedback.splitlines() if not line.startswith('$ '))
-    mentioned = set(re.findall(r'[\w./-]+\.[A-Za-z0-9]+', failure_output))
-    owner = next((task for task in reversed(queue) if mentioned.intersection(task.files)), queue[-1])
+    # Strip the root before matching so worktrees containing spaces also work.
+    if job.worktree:
+        failure_output = failure_output.replace(job.worktree.path.rstrip('/') + '/', '')
+    mentioned = {name.removeprefix('./') for name in re.findall(r'[\w./-]+\.[A-Za-z0-9]+', failure_output)}
+    owner = next((task for task in reversed(queue)
+                  if mentioned.intersection([*task.files, *(target.split('::')[0]
+                                                            for target in task.quick_test_targets)])), queue[-1])
     job.current_task_id = owner.id
     if owner.id in job.completed_task_ids:
         job.completed_task_ids.remove(owner.id)

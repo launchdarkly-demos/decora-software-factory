@@ -234,3 +234,9 @@ def test_missing_infrastructure_pauses_but_omitted_profile_selection_repairs(tmp
     omitted = review_plan(rules, plan, job)
     assert omitted.retry_plan
     assert 'Select a configured migration profile' in omitted.reason
+
+
+@pytest.mark.parametrize('path', ['app/0001/convert.py', 'app/class/convert.py', 'app/my-package/convert.py'])
+def test_python_package_directories_need_valid_identifiers(path):
+    plan = low_plan(files=[path])
+    assert 'valid identifiers' in ' '.join(task_problems(plan))

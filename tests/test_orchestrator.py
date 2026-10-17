@@ -54,15 +54,14 @@ def test_verify_retries_exhausted_fails_without_a_pr(tmp_path: Path) -> None:
     assert len(job.verify_runs) == 4
 
 
-def test_ambiguous_verification_pauses_for_a_human(tmp_path: Path) -> None:
+def test_ambiguous_verification_returns_to_builder(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor")
-    verifier = ScriptedVerifier([failed_verify("which route should this wrap?", "ambiguous")])
+    verifier = ScriptedVerifier([failed_verify("which route should this wrap?", "ambiguous"), passed_verify()])
     job = make_factory(tmp_path, repo, ScriptedHarness([low_plan()]), verifier=verifier).run(feature())
 
-    assert job.stage == Stage.AWAIT_HUMAN
-    assert job.question is not None
-    assert "which route" in job.question
-    assert job.resume_stage == Stage.PLAN
+    assert job.stage == Stage.DONE
+    assert job.task_retries == {"T1": 1}
+    assert len(job.verify_runs) == 2
 
 
 def test_high_risk_plan_pauses_and_resume_builds(tmp_path: Path) -> None:
@@ -280,14 +279,14 @@ def test_room_mood_demo_loop_on_a_worktree(tmp_path: Path) -> None:
     assert (tmp_path / "home" / "runs" / job.id / "review_report.json").exists()
 
 
-def test_missing_capabilities_anchor_pauses(tmp_path: Path) -> None:
+def test_missing_capabilities_anchor_uses_bounded_task_corrections(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor", capabilities=False)
     from factory.intake.load import load_feature
 
     job = make_factory(tmp_path, repo).run(load_feature(ROOT / "samples" / "decor-room-mood.json"))
-    assert job.stage == Stage.AWAIT_HUMAN
-    assert job.question is not None
-    assert "capabilities" in job.question
+    assert job.stage == Stage.FAILED
+    assert job.task_retries == {"T1": 3}
+    assert "capabilities" in job.error
     assert not (repo / "app" / "room_mood.py").exists()
 
 

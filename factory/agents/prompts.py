@@ -18,6 +18,8 @@ Rules:
   refer to earlier tasks, and context_files are actual observed repository paths.
   Use repository tools to resolve uncertain paths; do not guess stylesheet names.
   Preserve acceptance criteria, duplicate-name behavior, exclusions and required tests.
+- Python module names must be valid Python identifiers and must not start with a digit
+  or be Python keywords. Use migration_0001_room_home.py, never 0001_room_home.py.
 - Address API/frontend integration, stale responses, persistence and compatibility where relevant.
 - Set requires_migration=true for stored-data/schema changes; provide a migration_plan covering
   old data, repeat execution, failure recovery, rollback limitations, and migration tests.

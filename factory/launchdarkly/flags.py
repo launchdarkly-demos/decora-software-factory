@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from factory.errors import FactoryError
-from factory.governance.policy import Policy, flag_required
+from factory.governance.policy import Policy, flag_keys, flag_required, selected_flag_key
 from factory.launchdarkly.client import LaunchDarklyClient
 from factory.launchdarkly.token import resolve_token, scrub
 from factory.models import FlagAssurance, JobState
@@ -59,7 +59,7 @@ class LaunchDarklyService:
                 required=False,
                 key=key,
                 project_key=rules.project_key,
-                detail=("Feature flags and guarded rollout deferred by policy."
+                detail=("Feature flags disabled by policy."
                         if not self.policy.flags.enabled else "no LaunchDarkly flag required for this change"),
             )
         if not key:
@@ -106,6 +106,8 @@ class LaunchDarklyService:
 
         status, payload = client.request("GET", f"/flags/{project}/{key}", query=query)
         created = False
+        if status == 404 and flag_keys(job.model_copy(update={"plan": None})):
+            raise FactoryError(f"Issue names existing flag {key}, but it was not found in LaunchDarkly.")
         if status == 404:
             description = scrub(_description(job, ""), token)
             create_status, _created = client.request(
@@ -160,11 +162,7 @@ def console_url(project_key: str, flag_key: str, environment: str) -> str:
 
 
 def _flag_key(job: JobState) -> str | None:
-    if job.feature.flag_key:
-        return job.feature.flag_key
-    if job.plan is not None and job.plan.flag_key:
-        return job.plan.flag_key
-    return None
+    return selected_flag_key(job)
 
 
 def _description(job: JobState, existing: str) -> str:

@@ -44,6 +44,8 @@ class OpenAIAgentsHarness:
                 "context": context.model_dump(),
                 "answers": job.human_answers,
                 "flag_policy": self.policy.flags.model_dump(),
+                "rollout_rules": {key: rule.model_dump() for key, rule in self.policy.rollout_rules.items()},
+                "guarded_rollout": self.policy.guarded_rollout.model_dump(),
                 "plan_validation_feedback": job.govern_feedback,
                 "previous_plan": job.plan.model_dump() if job.plan else None,
             }
@@ -122,6 +124,8 @@ class OpenAIAgentsHarness:
             "previous_failed_attempts": sum(not run.passed for run in job.verify_runs[:-1]),
             "launchdarkly": job.launchdarkly.model_dump() if job.launchdarkly else None,
             "flag_policy": self.policy.flags.model_dump(),
+            "rollout_rules": {key: rule.model_dump() for key, rule in self.policy.rollout_rules.items()},
+            "guarded_rollout": self.policy.guarded_rollout.model_dump(),
         })
         agent = Agent(
             name="Reviewer",

@@ -63,7 +63,7 @@ class LaunchDarklyClient:
         except urllib.error.HTTPError as exc:
             status = int(exc.code)
             raw = exc.read()
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
             raise FactoryError(self._public(f"LaunchDarkly request failed: {reason}")) from None
         payload = _decode(raw)

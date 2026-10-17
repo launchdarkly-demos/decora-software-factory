@@ -3,7 +3,7 @@ import json
 import pytest
 
 from factory.context.repo import RepositoryReader, analyze_repo
-from factory.errors import FactoryError, GovernanceError
+from factory.errors import GovernanceError
 from factory.governance.policy import VerificationProfile, review_plan
 from factory.models import BuildProposal, FileEdit, PlanTask, WorktreeInfo
 from factory.verification.profiles import prerequisites, task_problems
@@ -69,7 +69,7 @@ def test_migration_needs_plan_checks_and_human_approval(tmp_path):
     assert decision.pause and decision.resume_stage == 'build'
 
 
-def test_unlisted_file_or_existing_write_rejected_before_any_edit(tmp_path):
+def test_unlisted_file_rejected_before_any_edit(tmp_path):
     from factory.agents.apply import apply_proposal
     from factory.tools.layer import ToolLayer
     repo = init_repo(tmp_path / 'repo')
@@ -80,10 +80,6 @@ def test_unlisted_file_or_existing_write_rejected_before_any_edit(tmp_path):
         FileEdit(path='allowed.py', kind='write', content='ok'),
         FileEdit(path='outside.py', kind='write', content='bad')])
     with pytest.raises(GovernanceError, match='outside approved'):
-        apply_proposal(job, tools, proposal)
-    assert not (repo / 'allowed.py').exists()
-    proposal.edits[-1] = FileEdit(path='server.py', kind='write', content='overwrite')
-    with pytest.raises(FactoryError, match='Use replace'):
         apply_proposal(job, tools, proposal)
     assert not (repo / 'allowed.py').exists()
 

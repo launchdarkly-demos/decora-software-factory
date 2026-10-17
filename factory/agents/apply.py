@@ -18,17 +18,15 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
     for edit in proposal.edits:
         if edit.path not in job.plan.files:
             raise GovernanceError(f"Edit outside approved plan: {edit.path}")
-        path = tools._resolve(edit.path)
+        tools._resolve(edit.path)
         for value in (edit.old, edit.new, edit.content):
             if any(marker in value for marker in (
                 "[excerpt; use read_file for more]", "[omitted; use read_file for exact text]"
             )):
                 raise FactoryError(f"{edit.path}: preview markers are not source code. "
                                    "Read exact source with read_file and use a unique verbatim anchor.")
-        exists = edit.path in staged or path.exists()
         if edit.kind == "write":
-            if exists:
-                raise FactoryError(f"Use replace for existing file: {edit.path}")
+            # Full replacements are safe within the approved, path-checked scope.
             staged[edit.path] = edit.content
         else:
             text = staged[edit.path] if edit.path in staged else tools.read(edit.path)

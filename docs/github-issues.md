@@ -134,7 +134,7 @@ Required guarded rollouts use a metric from `allowed_metric_keys`. A plan may na
 one, otherwise `default_metric_key` applies. In `policy.decora.yaml` the default is
 `decora-request-error` (failed Decora API requests and chat turns, event
 `decora_request_error`, lower is better). `ld_autogen__ai-completion-error` is also
-allowed. Both are per-user count metrics in `decor-agent-ai`. If the default is cleared, missing metrics pause; unapproved metrics return to
+allowed. Both are per-user count metrics in `decora-software-factory-demo`. If the default is cleared, missing metrics pause; unapproved metrics return to
 planning. Draft PRs record the metric, stages, minimum sample size, and rollback
 setting. Production stays off; a human starts the guarded rollout. The factory
 never starts it. Live LaunchDarkly errors pause for infrastructure recovery;

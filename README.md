@@ -136,12 +136,12 @@ Feature flags and guarded rollout are deferred (`flags.enabled: false`). The fac
 
 When a token is available, passing verification is not enough to reach the reviewer. The factory calls the LaunchDarkly REST API and:
 
-- creates boolean flag `decor-room-mood` in project `decor-agent-ai` if it does not exist
+- creates boolean flag `decor-room-mood` in project `decora-software-factory-demo` if it does not exist
 - reuses it if it does
 - keeps targeting off, serving the false variation, in `test` and `production`
 - tags it `software-factory` and `job-<id>`
 - writes a description that points at `.factory/runs/<job-id>`
-- puts `https://app.launchdarkly.com/projects/decor-agent-ai/flags/<key>/targeting?env=production` in the pull request body
+- puts `https://app.launchdarkly.com/projects/decora-software-factory-demo/flags/<key>/targeting?env=production` in the pull request body
 
 The reviewer does not run unless that production check passes. Turning the flag on stays a human action.
 

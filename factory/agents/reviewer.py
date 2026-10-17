@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from factory.governance.flags import audit_flag
+from factory.governance.policy import flag_required, selected_flag_key
 from factory.models import JobState, ReviewFinding, ReviewReport, Verdict
 from factory.tools.layer import ToolLayer
 
@@ -18,14 +19,15 @@ def review_deterministically(job: JobState, tools: ToolLayer) -> ReviewReport:
     else:
         diff = tools.diff(job.worktree.base_sha)
         files = tools.changed_files(job.worktree.base_sha)
-    flag_key = job.feature.flag_key or (job.plan.flag_key if job.plan else None)
-    must_off = True
-    problems = audit_flag(diff, flag_key, must_default_off=must_off) if job.feature.user_facing else []
+    flag_key = selected_flag_key(job)
+    required = flag_required(tools.policy, job)
+    problems = audit_flag(diff, flag_key, must_default_off=tools.policy.flags.must_default_off) if required else []
     findings = [
         ReviewFinding(
             check="launchdarkly_flag_defaults_off",
             passed=not problems,
-            evidence="; ".join(problems) if problems else f"{flag_key} is in the diff and defaults off",
+            evidence="; ".join(problems) if problems else (f"{flag_key} is in the diff and defaults off"
+                                                     if required else "flag audit exempt by class/policy"),
         )
     ]
     for criterion in job.feature.acceptance:

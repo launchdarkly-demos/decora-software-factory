@@ -4,9 +4,10 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from typing import cast, get_args
 
 from factory.errors import FactoryError
-from factory.models import FeatureRequest
+from factory.models import ChangeClass, FeatureRequest
 
 
 def check_issue_target(repo: Path, issue_url: str | None) -> None:
@@ -25,16 +26,19 @@ def load_feature(path: Path) -> FeatureRequest:
     return FeatureRequest.model_validate(data)
 
 
-def parse_issue_body(title: str, body: str, *, url: str | None = None) -> FeatureRequest:
+def parse_issue_body(
+    title: str, body: str, *, url: str | None = None, labels: list[str] | None = None,
+) -> FeatureRequest:
     """Read a small convention from an issue body. No network."""
     sections = _sections(body)
     summary = sections.get("goal", "").strip() or sections.get("summary", "").strip() or title
     acceptance = _bullets(sections.get("acceptance criteria", sections.get("acceptance", "")))
     rollout = sections.get("rollout", "").strip()
-    flag_key, flag_default = _flag(rollout or sections.get("flag", ""))
+    flag_key, flag_default = _flag(rollout + "\n" + sections.get("flag", "")
+                                   + "\nkey: " + sections.get("flag key", ""))
     impact = next((line.partition(":")[2].strip() for line in rollout.splitlines()
                    if line.partition(":")[0].strip().lower() == "user-facing"),
-                  sections.get("user facing", "yes"))
+                  sections.get("user facing", "no"))
     user_facing = _yes(impact)
     context = sections.get("context", "").strip()
     slug = re.sub(r"[^a-z0-9-]+", "-", title.lower()).strip("-") or "issue"
@@ -49,6 +53,9 @@ def parse_issue_body(title: str, body: str, *, url: str | None = None) -> Featur
         source="github_issue",
         issue_url=url,
         hints=[*_bullets(sections.get("hints", "")), *([context] if context else [])],
+        labels=labels or [],
+        change_class=(cast(ChangeClass, sections.get("change type", "").strip())
+                      if sections.get("change type", "").strip() in get_args(ChangeClass) else None),
         change_type=sections.get("change type", "").strip() or "unspecified",
         scope=sections.get("scope and constraints", "").strip(),
         verification=sections.get("verification", "").strip(),
@@ -59,7 +66,7 @@ def parse_issue_body(title: str, body: str, *, url: str | None = None) -> Featur
 def load_github_issue(slug: str, number: int) -> FeatureRequest:
     """Fetch one issue with `gh`. The demo path uses a local JSON spec instead."""
     proc = subprocess.run(
-        ["gh", "issue", "view", str(number), "--repo", slug, "--json", "title,body,url"],
+        ["gh", "issue", "view", str(number), "--repo", slug, "--json", "title,body,url,labels"],
         check=False,
         capture_output=True,
         text=True,
@@ -68,7 +75,8 @@ def load_github_issue(slug: str, number: int) -> FeatureRequest:
         detail = (proc.stderr or proc.stdout or "gh issue view failed").strip()
         raise FactoryError(detail)
     payload = json.loads(proc.stdout)
-    return parse_issue_body(payload.get("title", ""), payload.get("body", ""), url=payload.get("url"))
+    return parse_issue_body(payload.get("title", ""), payload.get("body", ""), url=payload.get("url"),
+                            labels=[item["name"] for item in payload.get("labels", [])])
 
 
 def _sections(body: str) -> dict[str, str]:
@@ -96,7 +104,7 @@ def _bullets(text: str) -> list[str]:
 
 
 def _flag(text: str) -> tuple[str | None, bool]:
-    key = None
+    keys: list[str] = []
     default = False
     for line in text.splitlines():
         if ":" not in line:
@@ -104,11 +112,11 @@ def _flag(text: str) -> tuple[str | None, bool]:
         name, value = line.split(":", 1)
         name = name.strip().lower()
         value = value.strip()
-        if name == "key" and value:
-            key = value
+        if name in {"key", "flag key"} and value and value != "replace-with-your-flag-key":
+            keys.append(value)
         if name == "default":
             default = value.lower() in {"on", "true", "yes", "1"}
-    return key, default
+    return (", ".join(dict.fromkeys(keys)) or None), default
 
 
 def _yes(text: str) -> bool:

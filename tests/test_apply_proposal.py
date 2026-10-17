@@ -1,7 +1,7 @@
 import pytest
 
 from factory.agents.apply import apply_proposal
-from factory.errors import FactoryError, GovernanceError
+from factory.errors import FactoryError, GovernanceError, PlanScopeError
 from factory.models import BuildProposal, FileEdit, WorktreeInfo
 from factory.tools.layer import ToolLayer
 from tests.support import bare_job, init_repo, low_plan, policy
@@ -47,7 +47,7 @@ def test_full_write_preserves_approval_and_path_checks_before_any_edit(tmp_path,
     (repo / 'escape.md').symlink_to(outside)
     original = (repo / 'README.md').read_text()
     base = tools.head_sha()
-    with pytest.raises(GovernanceError):
+    with pytest.raises(GovernanceError if approved else PlanScopeError):
         apply_proposal(job, tools, proposal(
             FileEdit(path='notes.md', kind='write', content='New file\n'),
             FileEdit(path=path, kind='write', content='Overwrite\n')))

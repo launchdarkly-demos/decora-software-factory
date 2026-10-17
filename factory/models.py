@@ -207,6 +207,8 @@ class JobState(BaseModel):
     source_sha: str | None = None
     context: RepoContext | None = None
     plan: ImplementationPlan | None = None
+    # Additional edit permissions, not required deliverables of the approved plan.
+    auto_approved_initializers: list[str] = Field(default_factory=list)
     builds: list[BuildResult] = Field(default_factory=list)
     verify_runs: list[VerifyResult] = Field(default_factory=list)
     review: ReviewReport | None = None

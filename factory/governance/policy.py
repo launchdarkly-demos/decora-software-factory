@@ -46,8 +46,8 @@ class Policy(BaseModel):
     version: int = 1
     max_retries: dict[str, int] = Field(
         default_factory=lambda: {
-            "verify": 2, "missing_files": 3, "review": 1, "govern": 1,
-            "plan": 2, "plan_repair": 2, "build": 3,
+            "verify": 2, "missing_files": 3, "review": 1, "govern": 1, "plan": 2,
+            "plan_repair": 2, "plan_scope": 2, "build": 3,
         }
     )
     stage_timeout_seconds: dict[str, float] = Field(default_factory=dict)

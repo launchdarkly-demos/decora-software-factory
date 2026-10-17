@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -25,7 +26,9 @@ class VerificationGate:
                 actionable="verification ran before a plan and a worktree existed",
                 classification="infra",
             )
-        missing = [path for path in dict.fromkeys(job.plan.files) if not tools._resolve(path).is_file()]
+        optional = set(job.auto_approved_initializers)
+        missing = [path for path in dict.fromkeys(job.plan.files)
+                   if path not in optional and not tools._resolve(path).is_file()]
         if missing:
             return VerifyResult(
                 passed=False,
@@ -114,7 +117,8 @@ class VerificationGate:
             )]
         ini = self.home / "runs" / job.id / "pytest-gate.ini"
         ini.parent.mkdir(parents=True, exist_ok=True)
-        ini.write_text("[pytest]\naddopts =\n")
+        # pythonpath entries are relative to the ini directory, outside the worktree.
+        ini.write_text(f"[pytest]\naddopts =\npythonpath = {shlex.quote(str(tools.worktree))}\n")
         argv = self._pytest_bin() + [
             "-q",
             "-p",

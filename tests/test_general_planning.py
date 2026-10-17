@@ -3,7 +3,7 @@ import json
 import pytest
 
 from factory.context.repo import RepositoryReader, analyze_repo
-from factory.errors import GovernanceError
+from factory.errors import GovernanceError, PlanScopeError
 from factory.governance.policy import VerificationProfile, review_plan
 from factory.models import BuildProposal, FileEdit, PlanTask, WorktreeInfo
 from factory.verification.profiles import prerequisites, task_problems
@@ -79,7 +79,7 @@ def test_unlisted_file_rejected_before_any_edit(tmp_path):
     proposal = BuildProposal(summary='bad', commit_message='bad', edits=[
         FileEdit(path='allowed.py', kind='write', content='ok'),
         FileEdit(path='outside.py', kind='write', content='bad')])
-    with pytest.raises(GovernanceError, match='outside approved'):
+    with pytest.raises(PlanScopeError, match='outside approved'):
         apply_proposal(job, tools, proposal)
     assert not (repo / 'allowed.py').exists()
 

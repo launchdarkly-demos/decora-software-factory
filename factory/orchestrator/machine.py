@@ -8,7 +8,7 @@ from pathlib import Path
 
 from factory.clock import Clock, SystemClock
 from factory.context.repo import analyze_repo
-from factory.errors import FactoryError, GovernanceError, RecipeError
+from factory.errors import FactoryError, GovernanceError, PlanScopeError, RecipeError
 from factory.execution.portable import PortableWorkspace
 from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import Policy, review_plan, review_ship
@@ -269,6 +269,13 @@ class Factory:
             return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=Stage.PLAN)
         except GovernanceError as exc:
             return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+        except PlanScopeError as exc:
+            used = job.retries.get("plan_scope", 0)
+            if used >= self.policy.max_retries.get("plan_scope", 2):
+                return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+            job.retries["plan_scope"] = used + 1
+            job.govern_feedback = str(exc)
+            return Transition(stage=Stage.BUILD, detail=str(exc))
         except FactoryError as exc:
             used = job.retries.get("build", 0)
             if used >= self.policy.max_retries.get("build", 3):

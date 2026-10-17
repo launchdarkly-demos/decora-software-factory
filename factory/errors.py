@@ -8,3 +8,7 @@ class GovernanceError(FactoryError):
 
 class RecipeError(FactoryError):
     """The builder has no safe change for this plan."""
+
+
+class PlanScopeError(FactoryError):
+    """The Builder proposed an in-repository edit outside the approved plan."""

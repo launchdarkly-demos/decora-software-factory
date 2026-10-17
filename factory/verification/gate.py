@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -88,7 +89,8 @@ class VerificationGate:
             tools._resolve(target.split('::')[0])
         ini = self.home / "runs" / job.id / "pytest-gate.ini"
         ini.parent.mkdir(parents=True, exist_ok=True)
-        ini.write_text("[pytest]\naddopts =\n")
+        # pythonpath entries are relative to the ini directory, outside the worktree.
+        ini.write_text(f"[pytest]\naddopts =\npythonpath = {shlex.quote(str(tools.worktree))}\n")
         argv = self._pytest_bin() + [
             "-q",
             "-p",

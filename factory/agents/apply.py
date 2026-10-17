@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from factory.errors import FactoryError, GovernanceError
+from pathlib import Path
+
+from factory.errors import FactoryError, GovernanceError, PlanScopeError
 from factory.models import BuildProposal, BuildResult, JobState
 from factory.tools.layer import ToolLayer
 from factory.verification.formatting import format_python
@@ -13,11 +15,34 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
         raise GovernanceError("build requires an approved plan")
     if not proposal.edits:
         raise FactoryError("Builder returned no edits. Read the approved files and return concrete changes.")
+    # Validate every path before scope corrections, so unsafe edits remain fatal.
+    for edit in proposal.edits:
+        if ".." in Path(edit.path).parts:
+            raise GovernanceError(f"path traversal is not allowed: {edit.path}")
+        path = tools._resolve(edit.path)
+        tools.policy.check_path(path.relative_to(tools.worktree).as_posix())
+    # New package directories may need initializers at each new ancestor level.
+    # Save these approvals in the plan so later Builder attempts can edit them too.
+    initializers: set[str] = set()
+    for rel in job.plan.files:
+        if Path(rel).suffix != ".py":
+            continue
+        parent = Path(rel).parent
+        while parent != Path(".") and not tools._resolve(parent.as_posix()).exists():
+            initializer = (parent / "__init__.py").as_posix()
+            tools._resolve(initializer)
+            initializers.add(initializer)
+            parent = parent.parent
+    job.plan.files.extend(sorted(initializers - set(job.plan.files)))
+    for edit in proposal.edits:
+        if edit.path not in job.plan.files:
+            raise PlanScopeError(
+                f"Edit outside approved plan: {edit.path}. Use only these approved files: "
+                + ", ".join(job.plan.files)
+            )
     # Stage edits in memory, in order. A bad later anchor must not leave partial edits.
     staged: dict[str, str] = {}
     for edit in proposal.edits:
-        if edit.path not in job.plan.files:
-            raise GovernanceError(f"Edit outside approved plan: {edit.path}")
         path = tools._resolve(edit.path)
         for value in (edit.old, edit.new, edit.content):
             if any(marker in value for marker in (

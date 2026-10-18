@@ -162,3 +162,89 @@ def test_repairable_builder_failures_correct_the_task_then_publish(tmp_path, fai
     assert job.pr is not None
     assert job.builder_calls == 2 and job.task_retries == {'T1': 1}
     assert len(job.verify_runs) == 1 and job.verify_runs[0].passed
+
+
+@pytest.mark.parametrize('large_existing_file', [False, True])
+def test_issue_19_sdk_replay_uses_checkpoint_sections_and_survives_max_turns(
+    tmp_path, monkeypatch, large_existing_file
+):
+    """Replay #19 through the real SDK harness boundary, task loop and draft publisher."""
+    from types import SimpleNamespace
+
+    import agents
+    from agents.exceptions import MaxTurnsExceeded
+
+    from factory.harness.openai_agents import EXCERPT_BUDGET, WHOLE_FILE_THRESHOLD, OpenAIAgentsHarness
+    from factory.tools.layer import ToolLayer
+
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
+    replay = load_replay(19)
+    repo = init_repo(tmp_path / 'repo')
+    rules = policy().model_copy(update={'builder_max_turns': 7})
+    rules.flags.enabled = False
+    if large_existing_file:
+        marker = '# model_update Home Room anchor\n'
+        source = '# unrelated padding\n' * 2000 + marker + '# unrelated tail\n' * 2000
+        assert len(source) > WHOLE_FILE_THRESHOLD
+        initial_tools = ToolLayer(repo, rules)
+        initial_tools.write('app/project.py', source)
+        initial_tools.commit('Existing large project module', ['app/project.py'])
+        edit = replay['calls'][0]['proposal']['edits'][0]
+        edit.update(kind='insert_after', old=marker, new=edit.pop('content'))
+
+    class SDKReplayHarness(ReplayHarness):
+        def build(self, job, tools):
+            self.job, self.tools = job, tools
+            return OpenAIAgentsHarness(policy=rules).build(job, tools)
+
+    harness = SDKReplayHarness(replay)
+    snapshots = []
+    checkpoints = []
+
+    def run(agent, payload, **kwargs):
+        assert agent.name == 'Builder'
+        assert kwargs['max_turns'] == 7
+        data = json.loads(payload)
+        record = replay['calls'][len(harness.calls)]
+        assert data['task']['id'] == 'model_update'
+        for text in record.get('feedback', []):
+            assert text in data['govern_feedback']
+        harness.calls.append(data['task']['id'])
+        snapshots.append(data['files'])
+        checkpoints.append(harness.tools.head_sha())
+        assert sum(len(item['text']) + len(item.get('outline', '')) for item in data['files']) <= EXCERPT_BUDGET
+        for path in data['task']['files']:
+            sections = [item for item in data['files'] if item['path'] == path]
+            assert sections, path
+            current = harness.tools.worktree / path
+            if current.exists():
+                text = current.read_text()
+                assert all(item['text'] in text for item in sections)
+                if len(text) < WHOLE_FILE_THRESHOLD:
+                    assert sections[0]['text'] == text
+        if record.get('max_turns'):
+            assert not harness.job.task_retries
+            assert harness.job.checkpoint_shas['model_update'] == [harness.tools.head_sha()]
+            raise MaxTurnsExceeded('test turn limit')
+        proposal = BuildProposal.model_validate(record['proposal'])
+        for edit in proposal.edits:
+            if edit.kind == 'insert_after':
+                sections = [item for item in data['files'] if item['path'] == edit.path]
+                assert any(edit.old in item['text'] for item in sections)
+                if large_existing_file:
+                    assert all(item['source_kind'] == 'exact_section' for item in sections)
+        return SimpleNamespace(final_output=proposal, raw_responses=[])
+
+    monkeypatch.setattr(agents.Runner, 'run_sync', run)
+    factory = make_factory(tmp_path, repo, harness, policy=rules, keep_worktree=True)
+    job = factory.run(feature(id='issue-19', acceptance=['Room names may repeat; context keys stay stable']))
+    assert job.stage == Stage.DONE, job.error or job.question
+    assert job.pr is not None and job.pr.dry_run
+    assert Path(job.pr.body_path).exists()
+    assert job.task_retries == {}
+    assert job.task_split_attempts == {'model_update': 2}
+    assert job.builder_calls == 3
+    assert len(job.checkpoint_shas['model_update']) == 2
+    assert job.verify_runs[-1].passed
+    assert checkpoints[1] == checkpoints[2]  # MaxTurnsExceeded made no mutation.
+    assert snapshots[0] != snapshots[1]  # Partial output supplied fresh checkpoint source.

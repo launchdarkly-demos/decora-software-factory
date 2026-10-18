@@ -3,6 +3,7 @@
 # behavior on. A human does that, outside this process.
 
 version: 1
+builder_max_turns: 40
 builder_max_output_tokens: 6000
 per_task_retries: 3
 max_job_attempts: 25

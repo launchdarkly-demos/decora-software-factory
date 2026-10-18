@@ -157,3 +157,9 @@ follow-up until browser and migration verification are configured.
 
 Generated PRs include rollout guidance and verification evidence. A human reviews,
 merges, and starts any required guarded rollout.
+
+
+Status-comment answer commands include the watcher's actual `--address` and include
+`--namespace` when it is not `default`. This keeps replies on the same Temporal
+server and namespace as the watcher, including when several local clones use
+different ports.

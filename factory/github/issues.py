@@ -4,6 +4,7 @@ import asyncio
 import fcntl
 import json
 import re
+import shlex
 import subprocess
 from datetime import timedelta
 from pathlib import Path
@@ -70,7 +71,11 @@ class GitHubIssues:
             self.api(f"{self.root}/issues/{number}/comments", method="POST", body={"body": desired})
 
 
-def status_body(job_id: str, snapshot: dict) -> str:
+def status_body(job_id: str, snapshot: dict, *, address: str = "localhost:7235",
+                namespace: str = "default") -> str:
+    connection = "--address " + shlex.quote(address)
+    if namespace != "default":
+        connection += " --namespace " + shlex.quote(namespace)
     job = snapshot.get("job", {})
     stage = job.get("stage", "queued")
     lines = [f"Software factory job `{job_id}` — **{stage}**."]
@@ -78,7 +83,7 @@ def status_body(job_id: str, snapshot: dict) -> str:
         lines += ["", job.get("question") or "Clarification required.", "",
                   "Answer from the factory terminal using the current pause ID:", "```bash",
                   f".venv/bin/python -m factory temporal answer {job_id} "
-                  f"--pause-id {snapshot['pause_id']} --answer 'YOUR ANSWER'", "```"]
+                  f"{connection} --pause-id {snapshot['pause_id']} --answer 'YOUR ANSWER'", "```"]
         plan = job.get("plan") or {}
         if plan.get("tasks"):
             lines += ["", "Proposed work:"]
@@ -101,8 +106,11 @@ def status_body(job_id: str, snapshot: dict) -> str:
 class IssueBridge:
     """Single-host polling bridge. Temporal IDs deduplicate submission; disk tracks ongoing jobs."""
 
-    def __init__(self, client, github: GitHubIssues, home: Path, queue: str, label: str):
+    def __init__(self, client, github: GitHubIssues, home: Path, queue: str, label: str, *,
+                 address: str | None = None, namespace: str | None = None):
         self.client, self.github, self.queue, self.label = client, github, queue, label
+        self.address = address or client.service_client.config.target_host
+        self.namespace = namespace or client.namespace
         home.mkdir(parents=True, exist_ok=True)
         self.path = home / "issues.json"
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {}
@@ -159,7 +167,8 @@ class IssueBridge:
             snapshot = {"job": {"stage": "failed"}}
         else:
             snapshot = await handle.query(FactoryWorkflow.snapshot, rpc_timeout=timedelta(seconds=10))
-        self.github.comment(record["number"], job_id, status_body(job_id, snapshot))
+        body = status_body(job_id, snapshot, address=self.address, namespace=self.namespace)
+        self.github.comment(record["number"], job_id, body)
         # Only mark finished after the GitHub update succeeds.
         record["terminal"] = terminal
         self.save()
@@ -174,7 +183,8 @@ async def watch_issues(client, args):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise FactoryError("An issue bridge already owns this home") from None
-        bridge = IssueBridge(client, GitHubIssues(args.slug), args.home, args.task_queue, args.label)
+        bridge = IssueBridge(client, GitHubIssues(args.slug), args.home, args.task_queue, args.label,
+                             address=args.address, namespace=args.namespace)
         print(f"Watching {args.slug}: label={args.label}, queue={args.task_queue}", flush=True)
         while True:
             try:

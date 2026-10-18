@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from factory.errors import FactoryError, GovernanceError
 from factory.models import BuildProposal, BuildResult, JobState
 from factory.task_queue import current_task
@@ -18,12 +20,22 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
         raise FactoryError("Builder returned no edits. Read the approved files and return concrete changes.")
     task = current_task(job)
     if task is not None:
-        unrelated = [edit.path for edit in proposal.edits
-                     if edit.path in job.plan.files and edit.path not in task.files]
+        unrelated = [rel for edit in proposal.edits for rel in (edit.path, edit.destination) if rel
+                     and rel in job.plan.files and rel not in task.files]
         if unrelated:
             raise FactoryError(f"Implement only task {task.id}; these files belong to other tasks: "
                                + ", ".join(unrelated))
-    staged: dict[str, str] = {}
+    staged: dict[str, str | None] = {}
+    modes: dict[str, int] = {}
+
+    def current(rel: str) -> str:
+        if rel in staged:
+            value = staged[rel]
+            if value is None:
+                raise FactoryError(f"missing file: {rel} (deleted earlier in this proposal)")
+            return value
+        return tools.read(rel)
+
     for edit in proposal.edits:
         path = tools._resolve(edit.path)
         if path.exists() and not path.is_file():
@@ -35,27 +47,76 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
                 raise FactoryError(f"{edit.path}: preview markers are not source code. "
                                    "Read exact source with read_file and use a unique verbatim anchor.")
         if edit.kind == "write":
-            # Path-checked full replacement is also valid for an existing file.
             staged[edit.path] = edit.content
+        elif edit.kind == "delete":
+            current(edit.path)  # A missing source is a correction, never a silent success.
+            staged[edit.path] = None
+        elif edit.kind == "move":
+            destination = tools._resolve(edit.destination)
+            if (edit.destination in staged and staged[edit.destination] is not None
+                    or edit.destination not in staged and destination.exists()):
+                raise FactoryError(f"{edit.destination}: move destination already exists; choose a new path.")
+            staged[edit.destination] = current(edit.path)
+            if edit.path in modes:
+                modes[edit.destination] = modes[edit.path]
+            elif path.exists():
+                modes[edit.destination] = path.stat().st_mode
+            staged[edit.path] = None
         else:
-            text = staged[edit.path] if edit.path in staged else tools.read(edit.path)
-            count = text.count(edit.old) if edit.old else 0
-            if count != 1:
-                raise FactoryError(f"{edit.path} anchor matched {count} times. "
-                                   "Read the current file with read_file and choose a unique exact anchor.")
-            staged[edit.path] = text.replace(edit.old, edit.new, 1)
+            text = current(edit.path)
+            if edit.kind == "append":
+                staged[edit.path] = text + edit.new
+            elif edit.kind == "prepend":
+                staged[edit.path] = edit.new + text
+            else:
+                if edit.kind == "replace" and not edit.old:
+                    raise FactoryError(f"{edit.path}: replace needs a non-empty unique anchor; "
+                                       "to add new code use insert_after/append/prepend")
+                count = text.count(edit.old) if edit.old else 0
+                if count != 1:
+                    raise FactoryError(f"{edit.path} anchor matched {count} times. "
+                                       "Read the current file with read_file and choose a unique exact anchor.")
+                replacement = (edit.old + edit.new if edit.kind == "insert_after" else
+                               edit.new + edit.old if edit.kind == "insert_before" else edit.new)
+                staged[edit.path] = text.replace(edit.old, replacement, 1)
     for content in staged.values():
-        check_content(content)
-    for rel, text in staged.items():
+        if content is not None:
+            check_content(content)
+    # Validate every operation before touching disk or expanding the plan. Roll back
+    # filesystem failures too; formatting/command failures below deliberately checkpoint.
+    originals = {rel: (tools._resolve(rel).read_bytes() if tools._resolve(rel).is_file() else None)
+                 for rel in staged}
+    original_modes = {rel: tools._resolve(rel).stat().st_mode for rel in staged if originals[rel] is not None}
+    try:
+        for rel, staged_text in staged.items():
+            if staged_text is None:
+                tools._resolve(rel).unlink(missing_ok=True)
+            else:
+                tools.write(rel, staged_text)
+                if rel in modes:
+                    tools._resolve(rel).chmod(modes[rel])
+    except OSError:
+        for rel, original in originals.items():
+            path = tools._resolve(rel)
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(original)
+                path.chmod(original_modes[rel])
+        raise
+    for rel, staged_text in staged.items():
         if rel not in job.plan.files:
             job.plan.files.append(rel)
             job.auto_added_files.append(rel)
         if task is not None and rel not in task.files:
             task.files.append(rel)
-        tools.write(rel, text)
+        if staged_text is None and rel not in job.deleted_files:
+            job.deleted_files.append(rel)
+        elif staged_text is not None and rel in job.deleted_files:
+            job.deleted_files.remove(rel)
     correction = None
     try:
-        format_python(tools, list(staged))
+        format_python(tools, [rel for rel, text in staged.items() if text is not None])
         for command in proposal.commands:
             report = tools.run(command)
             if not report.passed:
@@ -66,11 +127,8 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
         # Applied files are a checkpoint even when formatting or a quick command fails.
         # The next call repairs committed source rather than inheriting unrecorded edits.
         correction = str(exc)
-    paths = []
-    for edit in proposal.edits:
-        if edit.path not in paths:
-            paths.append(edit.path)
-    sha = tools.commit(proposal.commit_message, paths)
+    sha = tools.commit(proposal.commit_message,
+                       [rel for rel, text in staged.items() if text is not None or originals[rel] is not None])
     changed = tools.changed_files(job.worktree.base_sha)
     return BuildResult(
         task_complete=proposal.task_complete,
@@ -88,7 +146,10 @@ def check_proposal_safety(tools: ToolLayer, proposal: BuildProposal) -> None:
     check_content(proposal.commit_message)
     check_content(proposal.summary)
     for edit in proposal.edits:
-        tools._resolve(edit.path)
+        for rel in (edit.path, edit.destination) if edit.kind == "move" else (edit.path,):
+            if not rel or Path(rel).as_posix() != rel or "\\" in rel:
+                raise GovernanceError(f"use a canonical repository-relative file path: {rel!r}")
+            tools._resolve(rel)
         for value in (edit.content, edit.old, edit.new):
             check_content(value)
     for command in proposal.commands:

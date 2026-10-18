@@ -26,7 +26,8 @@ class VerificationGate:
                 actionable="verification ran before a plan and a worktree existed",
                 classification="infra",
             )
-        missing = [path for path in job.plan.files if not tools._resolve(path).is_file()]
+        missing = [path for path in job.plan.files
+                   if path not in job.deleted_files and not tools._resolve(path).is_file()]
         if missing:
             return VerifyResult(passed=False, commands=[], classification="test",
                                 actionable="\n".join(missing_file_feedback(job, path) for path in missing))
@@ -124,10 +125,10 @@ class VerificationGate:
         assert job.worktree is not None
         changed = tools.changed_files(job.worktree.base_sha)
         added_report = tools.run(
-            ["git", "diff", "--name-only", "--diff-filter=A", job.worktree.base_sha, "HEAD"]
+            ["git", "diff", "--no-renames", "--name-only", "--diff-filter=A", job.worktree.base_sha, "HEAD"]
         )
         added = [line for line in added_report.output.splitlines() if line.endswith(".py")]
-        py_changed = [path for path in changed if path.endswith(".py")]
+        py_changed = [path for path in changed if path.endswith(".py") and tools._resolve(path).is_file()]
         reports: list[CommandReport] = []
         lint_targets = added
         if lint_targets:

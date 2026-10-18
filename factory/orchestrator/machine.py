@@ -303,9 +303,12 @@ class Factory:
             return self._task_correction(job, result.correction)
         if not result.task_complete:
             return self._task_correction(job, "Continue the remaining work for this task only. "
+                                         "Use insert_after/insert_before with a unique old anchor, "
+                                         "or append/prepend with new "
+                                         "to add code to the current checkpoint. Never use replace with empty old. "
                                          "Return another smaller part with task_complete=false if necessary.",
                                          split=True)
-        missing = [path for path in task.files if not tools._resolve(path).is_file()]
+        missing = [path for path in task.files if path not in job.deleted_files and not tools._resolve(path).is_file()]
         if missing:
             return self._task_correction(job, "\n".join(missing_file_feedback(job, path) for path in missing))
         if task.quick_test_targets:

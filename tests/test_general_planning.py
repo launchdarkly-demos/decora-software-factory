@@ -240,3 +240,36 @@ def test_missing_infrastructure_pauses_but_omitted_profile_selection_repairs(tmp
 def test_python_package_directories_need_valid_identifiers(path):
     plan = low_plan(files=[path])
     assert 'valid identifiers' in ' '.join(task_problems(plan))
+
+
+def test_repository_tools_read_outside_edit_scope_without_exposing_secrets(tmp_path, monkeypatch):
+    import asyncio
+
+    from agents.tool_context import ToolContext
+
+    from factory.harness.repository_tools import repository_tools
+
+    (tmp_path / 'lib').mkdir()
+    (tmp_path / 'lib/helpers.py').write_text('def helper():\n    return 42\n')
+    (tmp_path / '.env').write_text('PRIVATE=do not read')
+    (tmp_path / 'innocent.py').write_text('value = "embedded-private-test-key"\n')
+    (tmp_path / 'alias').symlink_to(tmp_path / 'lib')
+    monkeypatch.setenv('OPENAI_API_KEY', 'embedded-private-test-key')
+    observed = {}
+    tools = {tool.name: tool for tool in repository_tools(tmp_path, policy(), observed=observed)}
+
+    def invoke(name, **args):
+        payload = json.dumps(args)
+        ctx = ToolContext(context=None, tool_name=name, tool_call_id='read-test', tool_arguments=payload)
+        return asyncio.run(tools[name].on_invoke_tool(ctx, payload))
+
+    assert 'lib/helpers.py' in invoke('list_files', pattern='lib/*')
+    assert 'lib/helpers.py:1: def helper():' in invoke('search_code', text='helper')
+    assert invoke('read_file', path='lib/helpers.py') == 'def helper():\n    return 42\n'
+    assert observed['lib/helpers.py'] == ['def helper():\n    return 42\n']
+    for path in ['.env', 'innocent.py', 'alias/helpers.py']:
+        assert 'unavailable or denied' in invoke('read_file', path=path)
+        assert path not in observed
+    assert 'embedded-private-test-key' not in invoke('search_code', text='value')
+    context = analyze_repo(tmp_path, feature())
+    assert 'embedded-private-test-key' not in str(context.model_dump())

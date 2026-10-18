@@ -30,13 +30,15 @@ Missing verification profiles cause a planning pause rather than silently skippe
 Discovery includes JS/TS/JSX/TSX, HTML, CSS, Vue/Svelte, SQL, Python, manifests and docs,
 including `web/`. Relevant sections are chosen using the request rather than fixed
 room-mood anchors. Models can inspect up to 30 read-only tool calls / 100,000 returned
-characters per specialist run, bounded further by 20 SDK turns. Symlinks, traversal,
+characters per specialist run. Planner/reviewer calls allow 20 SDK turns; Builder
+calls use `builder_max_turns` (default 40). Symlinks, traversal,
 secret/config directories, `.env*`, credentials, generated/dependency trees, and the
 PIM catalog are excluded. Maintainer deny-path policy also applies.
 
 Builder edits focus on the current task. Safe in-repo extra files (including package
 `__init__.py`) are added to the plan automatically and listed separately in the draft PR.
-Existing files accept either focused replacements or path-checked whole-file writes.
+Existing files accept focused replacements, anchored insertions, append/prepend, or path-checked whole-file writes.
+Files can also be deleted or moved to a safe new destination.
 These checks are not an OS sandbox: generated
 tests and configured commands still execute on the worker host.
 
@@ -160,18 +162,49 @@ until it reaches the separate risk-approval pause.
 
 ## Builder source grounding
 
-Builder context contains exact contiguous source prefixes. Truncation instructions
-are separate metadata rather than synthetic code lines. For replacements outside
-that prefix, the Builder must read the relevant range through `read_file` during
-that attempt. Anchors absent from supplied/read source are rejected with corrective
-feedback. Each retry rebuilds the source payload from the current checkout.
+Every Builder call reads the current worktree, including the first call and calls
+following corrections, splits, and checkpoints. Files up to 12,000 characters are
+supplied whole when they fit the shared 40,000-character budget. Larger files carry
+an outline and exact contiguous sections around symbols/anchors named in the task
+or last error, plus header/EOF regions when space permits. Each task file shares the
+budget; outlines and line ranges remain metadata rather than synthetic source lines.
+Replacement anchors in any supplied section count as observed source. For omitted
+ranges, use `read_file` during that attempt. Anchors absent from supplied/read source
+are rejected with corrective feedback.
+
+The output schema (`FileEdit` in `factory/models.py`) supports:
+
+| Kind | Fields and behavior |
+| --- | --- |
+| `write` | `path`, `content`: create or fully replace a file |
+| `replace` | `path`, unique non-empty `old`, `new`: replace the anchor |
+| `insert_after` / `insert_before` | `path`, unique non-empty `old`, `new`: insert beside the anchor |
+| `append` / `prepend` | `path`, `new`: add at EOF/start of an existing file without an anchor |
+| `delete` | `path`: remove an existing file |
+| `move` | `path`, `destination`: move to a new path; refuse existing destinations |
+
+Inserted strings are literal and include their own newlines. Empty `replace.old`
+produces an explicit correction directing the Builder to insert/append/prepend.
+Operations compose in proposal order, including on files staged earlier in the same
+proposal. Source and destination paths get the same containment, policy, symlink,
+and secret checks. New paths are automatically added to the plan and current task;
+paths owned exclusively by another task still require a correction. Intentional
+removals persist in `JobState.deleted_files`, so task completion accepts them.
+
+Read-only `list_files`, `search_code`, and `read_file` already allow safe repository
+inspection outside the task's edit list. Read responses now preserve exact newlines.
+Directory symlinks and credential-bearing source are excluded from context and tools.
+Explicit reads and task sections also support source files beyond the discovery
+inventory's 512 KB limit. Common shell/INI/config source extensions are readable.
 
 The edit applier rejects preview markers and empty proposals as corrections. Protected
 paths, traversal, symlink escapes, outside-repo paths and secrets are fatal safety errors.
 It checks the entire proposal for safety and simulates the sequence of edits
 before writing any file, so a bad later anchor does not leave earlier edits applied.
-This preflight protects against validation failures; it is not a filesystem transaction
-for disk errors or a rollback of commands run after successful edits.
+Filesystem write failures restore original file bytes and modes before returning an
+error. This is not crash-atomic across files and does not roll back commands run
+after successful edits. Moves preserve file permissions; changed-file reporting
+includes both source and destination even when Git detects a rename.
 
 After applying a proposal, the factory formats its edited Python files with the
 worker's Ruff formatter before running proposal commands and committing. Formatting
@@ -189,7 +222,7 @@ must fit one Builder response; use importable Python module names and include
 `__init__.py` for new packages. Nested test directories are supported: the generated
 pytest config sets `pythonpath` to the absolute workspace root.
 
-Each Builder call receives one task, its source prefixes, and short completed-task
+Each Builder call receives one task, its current source sections, and short completed-task
 summaries. Each accepted proposal is formatted and committed, then recorded in
 `JobState.checkpoint_shas`. Completed task IDs, current task ID, summaries, auto-added
 files, retry/split counts and total call count are persisted. Temporal recovery reuses
@@ -207,6 +240,7 @@ ship governance retain their existing order and policy.
 Policy controls:
 
 ```yaml
+builder_max_turns: 40
 builder_max_output_tokens: 6000
 per_task_retries: 3
 max_job_attempts: 25
@@ -214,9 +248,20 @@ split_attempts: 3
 ```
 
 `per_task_retries` counts corrections after the initial call, shared across apply,
-missing-file and full-verification failures. Cut-off output asks for a
+missing-file and full-verification failures. SDK `MaxTurnsExceeded` and cut-off output ask for a
 smaller part of the same task. Valid partial proposals set `task_complete=false` and
 are checkpointed. Split continuations never consume the task retry budget. Exceeding
 `split_attempts` stops the job with a split-cap error. Every Builder call, including interrupted calls,
 counts toward `max_job_attempts`. Review and governance keep their separate caps
 under `max_retries`; legacy build/verify/missing-file counters are no longer used.
+
+
+## Editing toolkit audit (#18 / #19)
+
+Added anchor-free and anchored additions, file deletion, and file moves. Existing
+whole-file writes cover file copying after a safe read; empty replacement text
+already supports deleting a unique block. Ordered edits support several changes to
+one file in a single proposal. There is no need to spend tool turns reading files
+already included in the payload. No arbitrary shell or unrestricted filesystem
+access is exposed to the Builder. Binary editing and standalone permission changes
+remain outside this text-edit toolkit.

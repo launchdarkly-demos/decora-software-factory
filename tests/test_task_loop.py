@@ -296,3 +296,34 @@ def test_proposal_cannot_implement_another_planned_task(tmp_path):
             FileEdit(path='app/part_1.py', kind='write', content='VALUE = 2\n')]))
     assert not (repo / 'app/part_0.py').exists()
     assert not job.auto_added_files
+
+
+def test_delete_and_move_complete_task_and_survive_job_reload(tmp_path):
+    repo = init_repo(tmp_path / 'repo')
+    plan = low_plan(change_class='refactor', flag_key=None,
+                    files=['server.py', 'README.md', 'test_structure.py'], test_targets=['test_structure.py'],
+                    tasks=[PlanTask(id='files', description='Remove server and move readme',
+                                    files=['server.py', 'README.md', 'test_structure.py'],
+                                    acceptance=['Files reorganized'])])
+
+    def build(job, tools):
+        return apply_proposal(job, tools, BuildProposal(summary='Reorganize files', commit_message='Reorganize files',
+            edits=[FileEdit(path='server.py', kind='delete'),
+                   FileEdit(path='README.md', kind='move', destination='docs/README.md'),
+                   FileEdit(path='test_structure.py', kind='write', content=(
+                       'from pathlib import Path\n\ndef test_files():\n'
+                       '    assert not Path("server.py").exists()\n'
+                       '    assert Path("docs/README.md").is_file()\n'))]))
+
+    rules = policy()
+    rules.flags.enabled = False
+    factory = make_factory(tmp_path, repo, ScriptedHarness([plan], builds=[build]),
+                           policy=rules, verifier=VerificationGate(repo, tmp_path / "home"), keep_worktree=True)
+    job = factory.run(feature())
+    assert job.stage == Stage.DONE, job.error or job.question
+    assert job.pr is not None
+    assert not job.task_retries
+    restored = factory.status(job.id)
+    assert restored.deleted_files == ['server.py', 'README.md']
+    assert restored.auto_added_files == ['docs/README.md']
+    assert (Path(job.worktree.path) / 'docs/README.md').read_text() == 'mini decora\n'

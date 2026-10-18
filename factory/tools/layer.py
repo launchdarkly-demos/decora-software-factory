@@ -96,7 +96,7 @@ class ToolLayer:
         return result.output
 
     def changed_files(self, base_sha: str) -> list[str]:
-        result = self.run(["git", "diff", "--name-only", base_sha, "HEAD"])
+        result = self.run(["git", "diff", "--no-renames", "--name-only", base_sha, "HEAD"])
         if not result.passed:
             return []
         return [line for line in result.output.splitlines() if line.strip()]
@@ -107,7 +107,11 @@ class ToolLayer:
         if ".." in Path(rel.replace("\\", "/")).parts:
             raise GovernanceError(f"path traversal is not allowed: {rel}")
         self.policy.check_path(rel)
-        path = (self.worktree / rel).resolve()
+        unresolved = self.worktree / rel
+        if any(part.is_symlink() for part in [unresolved, *unresolved.parents]
+               if part.is_relative_to(self.worktree)):
+            raise GovernanceError(f"symlink paths are not allowed: {rel}")
+        path = unresolved.resolve()
         if not path.is_relative_to(self.worktree):
             raise GovernanceError(f"path escapes the worktree: {rel}")
         self.policy.check_path(path.relative_to(self.worktree).as_posix())

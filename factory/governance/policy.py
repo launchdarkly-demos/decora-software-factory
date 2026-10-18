@@ -71,6 +71,7 @@ class VerificationProfile(BaseModel):
 
 class Policy(BaseModel):
     version: int = 1
+    builder_max_turns: int = Field(default=40, gt=0)
     builder_max_output_tokens: int = Field(default=6000, gt=0)
     per_task_retries: int = Field(default=3, ge=0)
     max_job_attempts: int = Field(default=25, gt=0)

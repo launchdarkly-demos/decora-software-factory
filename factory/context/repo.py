@@ -8,12 +8,13 @@ from pathlib import Path
 from factory.errors import GovernanceError
 from factory.governance.policy import Policy
 from factory.models import FeatureRequest, RepoContext, Snippet
+from factory.tools.safety import check_content
 
 SKIP_DIRS = {'.git', '.claude', '.codex', '.agents', '.aws', '.ssh', '.config', 'venv', '.venv', 'node_modules',
              '__pycache__', '.factory', 'data', 'worktrees', '.mypy_cache', '.pytest_cache',
              '.ruff_cache', 'dist', 'build', '.next', 'coverage', 'playwright-report', 'test-results'}
 TEXT_SUFFIXES = {'.py', '.md', '.yml', '.yaml', '.toml', '.json', '.js', '.jsx', '.ts', '.tsx',
-                 '.mjs', '.cjs', '.html', '.css', '.scss', '.vue', '.svelte', '.sql', '.txt'}
+                 '.mjs', '.cjs', '.html', '.css', '.scss', '.vue', '.svelte', '.sql', '.txt', '.sh', '.ini', '.cfg'}
 FRONTEND_SUFFIXES = {'.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.html', '.css', '.scss', '.vue', '.svelte'}
 
 
@@ -50,18 +51,24 @@ class RepositoryReader:
             raise GovernanceError('repository path is excluded from agent context')
         self.policy.check_path(rel)
         path = self.root / relative
-        if path.is_symlink() or not path.resolve().is_relative_to(self.root):
+        if (any(part.is_symlink() for part in [path, *path.parents] if part.is_relative_to(self.root))
+                or not path.resolve().is_relative_to(self.root)):
             raise GovernanceError('repository path escapes through a symlink')
         return path
 
-    def read(self, rel: str, start: int = 1, count: int = 160) -> str:
+    def source(self, rel: str) -> str:
         path = self.resolve(rel)
-        if rel not in self.paths:
-            raise GovernanceError('file is not in the readable source inventory')
+        if path.suffix not in TEXT_SUFFIXES and path.name not in {'Makefile', 'Dockerfile'}:
+            raise GovernanceError('file is not readable source')
+        text = path.read_text(errors='replace')
+        check_content(text)
+        return text
+
+    def read(self, rel: str, start: int = 1, count: int = 160) -> str:
         if start < 1 or not 1 <= count <= 200:
             raise GovernanceError('read range must start at 1 or later and contain at most 200 lines')
-        lines = path.read_text(errors='replace').splitlines()
-        return '\n'.join(lines[start - 1:start - 1 + count])[:16000]
+        lines = self.source(rel).splitlines(keepends=True)
+        return ''.join(lines[start - 1:start - 1 + count])[:16000]
 
     def list_files(self, pattern: str = '*') -> list[str]:
         return [path for path in self.paths if fnmatch.fnmatch(path, pattern)][:150]
@@ -71,7 +78,10 @@ class RepositoryReader:
             return []
         hits = []
         for rel in self.paths:
-            content = self.resolve(rel).read_text(errors='replace')
+            try:
+                content = self.source(rel)
+            except GovernanceError:
+                continue
             for index, line in enumerate(content.splitlines(), 1):
                 if text.lower() in line.lower():
                     hits.append(f'{rel}:{index}: {line[:240]}')
@@ -85,7 +95,10 @@ def analyze_repo(root: Path, feature: FeatureRequest, policy: Policy | None = No
     words = _keywords(feature)
     scored = []
     for rel in reader.paths:
-        content = reader.resolve(rel).read_text(errors='replace')
+        try:
+            content = reader.source(rel)
+        except GovernanceError:
+            continue
         score = sum(4 for word in words if word in rel.lower())
         score += sum(1 for word in words if word in content.lower())
         if rel in {'AGENTS.md', 'README.md', 'package.json', 'pyproject.toml', 'Makefile'}:

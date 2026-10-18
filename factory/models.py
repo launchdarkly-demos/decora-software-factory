@@ -104,10 +104,11 @@ class ImplementationPlan(BaseModel):
 
 class FileEdit(BaseModel):
     path: str
-    kind: Literal["write", "replace"]
-    content: str = ""
-    old: str = ""
-    new: str = ""
+    kind: Literal["write", "replace", "insert_after", "insert_before", "append", "prepend", "delete", "move"]
+    destination: str = Field(default="", description="For move: new repository-relative path; must not exist.")
+    content: str = Field(default="", description="For write: complete file contents.")
+    old: str = Field(default="", description="Unique non-empty verbatim anchor for replace/insert_after/insert_before.")
+    new: str = Field(default="", description="Literal replacement or inserted text, including any needed newlines.")
 
 
 class BuildProposal(BaseModel):
@@ -236,6 +237,7 @@ class JobState(BaseModel):
     builder_calls: int = 0
     completed_builder_calls: int = 0
     auto_added_files: list[str] = Field(default_factory=list)
+    deleted_files: list[str] = Field(default_factory=list)
     quick_verify_runs: dict[str, list[VerifyResult]] = Field(default_factory=dict)
     retries: dict[str, int] = Field(default_factory=dict)
     usage: Usage = Field(default_factory=Usage)

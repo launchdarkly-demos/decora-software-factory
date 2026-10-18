@@ -14,4 +14,10 @@ no network calls, pushes, or remote PR creation occur.
   partial response, and continuation without task retries. The test reloads the
   job after two checkpoints before completing the remaining queue.
 
+- `issue_19.json`: `model_update` checkpoints partial Home/Room models, hits the SDK's
+  `MaxTurnsExceeded`, then completes using only insert/append edits. The SDK replay
+  asserts fresh source on all three calls, no task retries, two checkpoints and a
+  local draft PR after real pytest verification. A second variant starts with a
+  large existing module and inserts using supplied sections far beyond its prefix.
+
 Run these replays with `.venv/bin/python -m pytest -q tests/test_replays.py`.

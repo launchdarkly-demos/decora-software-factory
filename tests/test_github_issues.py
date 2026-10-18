@@ -34,6 +34,7 @@ class FakeGitHub(GitHubIssues):
 
 class FakeTemporal:
     namespace = 'default'
+    service_client = SimpleNamespace(config=SimpleNamespace(target_host='localhost:7236'))
 
     def __init__(self):
         self.started = {}
@@ -65,6 +66,7 @@ def test_restart_deduplicates_and_tracks_after_label_removed(tmp_path):
         first = IssueBridge(temporal, gh, tmp_path, 'queue', 'factory:ready')
         await first.tick()
         assert '--pause-id 2' in gh.posts[-1][2]
+        assert '--address localhost:7236' in gh.posts[-1][2]
         # Simulate a lost local receipt after Temporal accepted submission.
         first.path.unlink()
         restored = IssueBridge(temporal, gh, tmp_path, 'queue', 'factory:ready')
@@ -140,3 +142,11 @@ def test_hints_are_preserved_and_failure_comment_omits_raw_logs():
     feature = parse_issue_body('Mood', '## Summary\nMood\n## Hints\n- server.py\n')
     assert feature.hints == ['server.py']
     assert 'private error' not in status_body('job-gh-42', {'job': {'stage': 'failed', 'error': 'private error'}})
+
+
+@pytest.mark.parametrize('namespace', ['default', 'factory-demo'])
+def test_status_commands_target_watcher_connection(namespace):
+    body = status_body('job-gh-42', {'job': {'stage': 'await_human'}, 'pause_id': 1},
+                       address='localhost:7236', namespace=namespace)
+    assert '--address localhost:7236' in body
+    assert ('--namespace factory-demo' in body) == (namespace != 'default')

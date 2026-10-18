@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 
 from factory.agents.apply import apply_proposal, check_proposal_safety
@@ -75,7 +76,9 @@ class OpenAIAgentsHarness:
         if task is None:
             raise FactoryError("No pending Builder task")
         files = _file_excerpts(job, tools)
-        observed = {item["path"]: [item["text"]] for item in files}
+        observed: dict[str, list[str]] = {}
+        for item in files:
+            observed.setdefault(item["path"], []).append(item["text"])
         payload = json.dumps(
             {
                 "task": task.model_dump(),
@@ -99,7 +102,7 @@ class OpenAIAgentsHarness:
             model_settings=ModelSettings(max_tokens=self.policy.builder_max_output_tokens),
         )
         try:
-            result = _run_agent(agent, payload)
+            result = _run_agent(agent, payload, max_turns=self.policy.builder_max_turns)
         except GovernanceError:
             raise
         except Exception as exc:
@@ -161,41 +164,104 @@ def _feature_for_model(job: JobState) -> dict[str, object]:
     return data
 
 
+WHOLE_FILE_THRESHOLD = 12_000
+EXCERPT_BUDGET = 40_000
+
+
 def _file_excerpts(job: JobState, tools: ToolLayer) -> list[dict[str, str]]:
-    names: list[str] = []
-    if job.plan is not None:
-        task = current_task(job)
-        if task is not None:
-            names.extend(task.files)
+    """Refresh from disk on EVERY call, including split and correction calls.
+
+    Each text is a contiguous verbatim source region; outlines and line numbers
+    stay in metadata so anchors never accidentally include synthetic source.
+    """
+    task = current_task(job)
+    if task is None:
+        return []
     reader = RepositoryReader(tools.worktree, tools.policy)
+    names = list(dict.fromkeys(task.files))
+    clues = " ".join([task.description, *task.acceptance, job.govern_feedback or ""])
+    words = set(re.findall(r"[A-Za-z_][A-Za-z_0-9]{2,}", clues))
+    feedback_words = set(re.findall(r"[A-Za-z_][A-Za-z_0-9]{2,}", job.govern_feedback or ""))
     excerpts: list[dict[str, str]] = []
-    budget = 40_000
-    for rel in dict.fromkeys(names):
-        if budget <= 0 or len(excerpts) >= 12:
-            break
+    budget = EXCERPT_BUDGET
+    for index, rel in enumerate(names):
+        allowance = min(WHOLE_FILE_THRESHOLD, budget // (len(names) - index))
         try:
-            if rel not in reader.paths:
+            path = reader.resolve(rel)
+            if not path.exists():
+                deleted = rel in job.deleted_files
+                excerpts.append({"path": rel, "text": "", "source_kind": "deleted" if deleted else "missing",
+                                 "instruction": "Intentionally removed at current checkpoint."
+                                 if deleted else "File absent at current checkpoint; use write to create it."})
                 continue
-            text = reader.resolve(rel).read_text(errors="replace")
-        except FactoryError:
+            text = reader.source(rel)
+        except (FactoryError, OSError):
+            excerpts.append({"path": rel, "text": "", "source_kind": "unavailable",
+                             "instruction": "File unavailable or denied by repository policy."})
             continue
-        excerpt = text[:min(budget, 12000)]
-        excerpts.append({"path": rel, "text": excerpt,
-                         "source_kind": "exact_prefix", "truncated": str(len(excerpt) < len(text)).lower(),
-                         "instruction": "Use read_file for source beyond this prefix; metadata is not code."})
-        budget -= len(excerpt)
+        if len(text) <= allowance:
+            excerpts.append({"path": rel, "text": text, "source_kind": "whole_file", "truncated": "false"})
+            budget -= len(text)
+            continue
+        lines = text.splitlines(keepends=True)
+        symbols = [i for i, line in enumerate(lines) if re.match(r"\s*(?:async )?(?:def|class) ", line)]
+        outline = "".join(f"{i + 1}: {lines[i]}" for i in symbols)[:min(1500, allowance // 4)]
+        allowance -= len(outline)
+        budget -= len(outline)
+        ranked = sorted(range(len(lines)), key=lambda i: (
+            -sum((4 if word in feedback_words else 1) for word in words
+                 if re.search(r"\b" + re.escape(word) + r"\b", lines[i])), i))
+        # Prioritize named symbols/anchors, then include a header and EOF for additions.
+        centers = [i for i in ranked if any(word in lines[i] for word in words)][:8]
+        centers += [0, len(lines) - 1, *symbols]
+        kept: set[int] = set()
+        for center in centers:
+            region = set(range(max(0, center - 6), min(len(lines), center + 18))) - kept
+            size = sum(len(lines[i]) for i in region)
+            # A long neighboring line must not hide a small, relevant anchor.
+            for farthest in sorted(region, key=lambda i: abs(i - center), reverse=True):
+                if size <= allowance:
+                    break
+                region.remove(farthest)
+                size -= len(lines[farthest])
+            kept.update(region)
+            allowance -= size
+            budget -= size
+        # Very long single lines still get a bounded exact prefix.
+        if not kept:
+            excerpt = text[:allowance]
+            budget -= len(excerpt)
+            excerpts.append({"path": rel, "text": excerpt, "source_kind": "exact_prefix",
+                             "outline": outline, "truncated": "true"})
+            continue
+        groups: list[list[int]] = []
+        for line in sorted(kept):
+            if not groups or line != groups[-1][-1] + 1:
+                groups.append([])
+            groups[-1].append(line)
+        for group_index, group in enumerate(groups):
+            excerpts.append({"path": rel, "text": "".join(lines[i] for i in group),
+                             "source_kind": "exact_section", "start_line": str(group[0] + 1),
+                             "end_line": str(group[-1] + 1), "truncated": "true",
+                             "outline": outline if group_index == 0 else "",
+                             "instruction": "Current source section. Use read_file for omitted ranges."})
     return excerpts
 
 
 def _reject_oversized_edits(proposal: BuildProposal) -> None:
     for edit in proposal.edits:
-        if edit.kind == "replace" and (not edit.old or len(edit.old) > 16000 or len(edit.new) > 16000):
+        if edit.kind == "replace" and not edit.old:
+            raise FactoryError(f"{edit.path}: replace needs a non-empty unique anchor; "
+                               "to add new code use insert_after/append/prepend")
+        if edit.kind == "replace" and (len(edit.old) > 16000 or len(edit.new) > 16000):
             raise FactoryError(f"{edit.path}: use a nonempty, focused replace anchor and read exact source first.")
 
 
 def _builder_failure(exc: BaseException) -> FactoryError:
     text = str(exc).lower()
-    if any(marker in text for marker in ("max_output_tokens", "max_tokens", "incomplete", "token limit")):
+    if exc.__class__.__name__ == "MaxTurnsExceeded" or any(
+        marker in text for marker in ("max_output_tokens", "max_tokens", "incomplete", "token limit")
+    ):
         return IncompleteBuildError(
             "Builder output incomplete. Split this task: return a smaller part now with "
             "task_complete=false; remaining work follows in the next call for the same task.")
@@ -203,7 +269,7 @@ def _builder_failure(exc: BaseException) -> FactoryError:
 
 
 
-def _run_agent(agent, payload: str):
+def _run_agent(agent, payload: str, *, max_turns: int = 20):
     """Keep HTTP connection pools scoped to the activity's event loop."""
     from agents import RunConfig, Runner
     from agents.models.openai_provider import OpenAIProvider
@@ -214,7 +280,8 @@ def _run_agent(agent, payload: str):
     client = AsyncOpenAI()
     try:
         return Runner.run_sync(
-            agent, payload, max_turns=20, run_config=RunConfig(model_provider=OpenAIProvider(openai_client=client))
+            agent, payload, max_turns=max_turns,
+            run_config=RunConfig(model_provider=OpenAIProvider(openai_client=client))
         )
     finally:
         loop.run_until_complete(client.close())

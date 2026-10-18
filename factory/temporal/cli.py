@@ -52,6 +52,7 @@ def parser() -> argparse.ArgumentParser:
     issues = sub.add_parser("watch-issues", parents=[common], help="submit maintainer-labeled GitHub issues")
     issues.add_argument("--slug", required=True, help="GitHub owner/name matching the worker target")
     issues.add_argument("--label", default="factory:ready")
+    issues.add_argument("--retry-label", default="factory:retry")
     issues.add_argument("--home", type=Path, default=ROOT / ".factory" / "github")
     issues.add_argument("--interval", type=float, default=30)
     issues.add_argument("--once", action="store_true")

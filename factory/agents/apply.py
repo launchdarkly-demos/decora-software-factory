@@ -139,7 +139,10 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
         # The next call repairs committed source rather than inheriting unrecorded edits.
         correction = str(exc)
     paths = [rel for rel, text in staged.items() if text is not None or originals[rel] is not None]
-    sha = tools.commit(proposal.commit_message, paths) if paths else tools.head_sha()
+    task_id = task.id if task else "T1"
+    part = len(job.checkpoint_shas.get(task_id, [])) + 1
+    message = f"checkpoint {task_id}/{part}\n\n{proposal.commit_message}"
+    sha = tools.commit(message, paths) if paths else tools.head_sha()
     changed = tools.changed_files(job.worktree.base_sha)
     return BuildResult(
         task_complete=proposal.task_complete,
@@ -161,6 +164,11 @@ def check_proposal_safety(tools: ToolLayer, proposal: BuildProposal) -> None:
             field = "path" if not edit.path else "destination"
             raise FactoryError(f"edits.{index}.{field}: required non-empty field. "
                                "Return one complete BuildProposal.")
+        required = (["content"] if edit.kind in {"create", "write"} else
+                    ["new"] if edit.kind in {"replace", "insert_before", "insert_after", "append", "prepend"} else [])
+        for field in required:
+            if field not in edit.model_fields_set:
+                raise FactoryError(f"edits.{index}.{field}: required field. Return one complete BuildProposal.")
         for rel in (edit.path, edit.destination) if edit.kind == "move" else (edit.path,):
             if not rel or Path(rel).as_posix() != rel or "\\" in rel:
                 raise SafetyError(f"Safety violation: noncanonical path on `{rel}`.")

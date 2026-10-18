@@ -139,7 +139,8 @@ class VerificationGate:
                 reports.append(tools.run([*ruff, "check", "--isolated", "--select", "E,F", *lint_targets]))
         if py_changed:
             python = _target_python(self.target_repo)
-            reports.append(tools.run([python, "-m", "compileall", "-q", *py_changed]))
+            reports.append(tools.run([python, "-m", "compileall", "-q",
+                                      "--invalidation-mode", "checked-hash", *py_changed]))
         return reports
 
     def _pytest_bin(self) -> list[str]:

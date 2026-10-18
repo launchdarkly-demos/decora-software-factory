@@ -160,101 +160,12 @@ one reply requesting replanning with the automatic validator; subsequent structu
 corrections happen internally. Use its current pause ID and do not approve a build
 until it reaches the separate risk-approval pause.
 
-## Builder source grounding
+## Builder
 
-Every Builder call reads the current worktree, including the first call and calls
-following corrections, splits, and checkpoints. Files up to 12,000 characters are
-supplied whole when they fit the shared 40,000-character budget. Larger files carry
-an outline and exact contiguous sections around symbols/anchors named in the task
-or last error, plus header/EOF regions when space permits. Each task file shares the
-budget; outlines and line ranges remain metadata rather than synthetic source lines.
-Replacement anchors in any supplied section count as observed source. For omitted
-ranges, use `read_file` during that attempt. Anchors absent from supplied/read source
-are rejected with corrective feedback.
-
-The output schema (`FileEdit` in `factory/models.py`) supports:
-
-| Kind | Fields and behavior |
-| --- | --- |
-| `write` | `path`, `content`: create or fully replace a file |
-| `replace` | `path`, unique non-empty `old`, `new`: replace the anchor |
-| `insert_after` / `insert_before` | `path`, unique non-empty `old`, `new`: insert beside the anchor |
-| `append` / `prepend` | `path`, `new`: add at EOF/start of an existing file without an anchor |
-| `delete` | `path`: remove an existing file |
-| `move` | `path`, `destination`: move to a new path; refuse existing destinations |
-
-Inserted strings are literal and include their own newlines. Empty `replace.old`
-produces an explicit correction directing the Builder to insert/append/prepend.
-Operations compose in proposal order, including on files staged earlier in the same
-proposal. Source and destination paths get the same containment, policy, symlink,
-and secret checks. New paths are automatically added to the plan and current task;
-paths owned exclusively by another task still require a correction. Intentional
-removals persist in `JobState.deleted_files`, so task completion accepts them.
-
-Read-only `list_files`, `search_code`, and `read_file` already allow safe repository
-inspection outside the task's edit list. Read responses now preserve exact newlines.
-Directory symlinks and credential-bearing source are excluded from context and tools.
-Explicit reads and task sections also support source files beyond the discovery
-inventory's 512 KB limit. Common shell/INI/config source extensions are readable.
-
-The edit applier rejects preview markers and empty proposals as corrections. Protected
-paths, traversal, symlink escapes, outside-repo paths and secrets are fatal safety errors.
-It checks the entire proposal for safety and simulates the sequence of edits
-before writing any file, so a bad later anchor does not leave earlier edits applied.
-Filesystem write failures restore original file bytes and modes before returning an
-error. This is not crash-atomic across files and does not roll back commands run
-after successful edits. Moves preserve file permissions; changed-file reporting
-includes both source and destination even when Git detects a rename.
-
-After applying a proposal, the factory formats its edited Python files with the
-worker's Ruff formatter before running proposal commands and committing. Formatting
-uses isolated defaults and stays inside the approved edit scope. This prevents
-fixable layout errors from consuming model repair attempts. Formatting failures
-return to the current task as corrections after recording the applied source in a
-checkpoint. The normal lint and behavioral verification gates still run, since
-formatting alone cannot fix every lint error or establish correctness.
-
-## Builder task queue and retry policy
-
-`plan.tasks` runs in dependency order. Each task owns files and acceptance checks,
-with optional `quick_test_targets` containing pytest paths or selectors. Plan tasks
-must fit one Builder response; use importable Python module names and include
-`__init__.py` for new packages. Nested test directories are supported: the generated
-pytest config sets `pythonpath` to the absolute workspace root.
-
-Each Builder call receives one task, its current source sections, and short completed-task
-summaries. Each accepted proposal is formatted and committed, then recorded in
-`JobState.checkpoint_shas`. Completed task IDs, current task ID, summaries, auto-added
-files, retry/split counts and total call count are persisted. Temporal recovery reuses
-completed stages and restores interrupted work to the latest saved checkpoint;
-portable workers also save a reconstructable bundle at each checkpoint.
-
-Missing task files produce `Create <file> covering: <task description and acceptance>`
-feedback before tests run. Optional quick-test results are recorded as advisory evidence;
-failures do not consume task retries or block later tasks. Once all tasks
-complete, one full verification pass runs. A failed full pass reopens the owner of a
-file named in the failure output (or the last task), then runs full verification again
-after repair. Completed unrelated tasks are not replayed. Flag assurance, review and
-ship governance retain their existing order and policy.
-
-Policy controls:
-
-```yaml
-builder_max_turns: 40
-builder_max_output_tokens: 6000
-per_task_retries: 3
-max_job_attempts: 25
-split_attempts: 3
-```
-
-`per_task_retries` counts corrections after the initial call, shared across apply,
-missing-file and full-verification failures. SDK `MaxTurnsExceeded` and cut-off output ask for a
-smaller part of the same task. Valid partial proposals set `task_complete=false` and
-are checkpointed. Split continuations never consume the task retry budget. Exceeding
-`split_attempts` stops the job with a split-cap error. Every Builder call, including interrupted calls,
-counts toward `max_job_attempts`. Review and governance keep their separate caps
-under `max_retries`; legacy build/verify/missing-file counters are no longer used.
-
+The approved [Builder spec](builder-spec.md) is the source of truth for Builder
+inputs, edits, safety checks, correction and split handling, budgets, checkpoints,
+verification, watcher retries, and acceptance replays. See the
+[traceability audit](builder-spec-traceability.md) for implementation and coverage.
 
 ## Editing toolkit audit (#18 / #19)
 

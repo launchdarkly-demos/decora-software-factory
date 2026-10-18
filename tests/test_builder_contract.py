@@ -251,9 +251,21 @@ def test_pr_sections_and_automatic_file_task_survive_roundtrip(checkpoint):
     job, tools = checkpoint
     apply_proposal(job, tools, proposal([FileEdit(path='app/new.py', kind='write', content='VALUE = 1\n')]))
     job = type(job).model_validate_json(job.model_dump_json())
+    from factory.models import FlagAssurance
+
+    job.feature.issue_url = 'https://github.com/owner/repo/issues/42'
+    job.plan.requires_migration = True
+    job.plan.migration_plan = 'Backfill; recover by disabling the flag.'
+    job.plan.flag_rationale = 'Keep the migration reversible.'
+    job.launchdarkly = FlagAssurance(mode='live', required=True, key=job.plan.flag_key,
+                                    url='https://example.com/flag', production_on=False,
+                                    production_serves_false=True, environments_off=True)
     body = render_pr(job, '')
-    assert '- `app/new.py` (task T1)' in body
-    sections = ['## Summary', '## Rollout', '## Implementation plan',
+    assert body.startswith(f'# {job.feature.title}\n\nDraft pull request. Do not merge.')
+    for text in [job.feature.issue_url, job.plan.migration_plan, job.plan.flag_rationale,
+                 'https://example.com/flag', 'code default: off.', '- `app/new.py` (task T1)']:
+        assert text in body
+    sections = ['## Summary', '## Rollout', '## Implementation plan', '## Migration and recovery',
                 '## Files added to the plan automatically', '## Test evidence', '## Review findings',
                 '## Remaining risks', '## Retries', '## Diff summary']
     assert [body.index(section) for section in sections] == sorted(body.index(section) for section in sections)
@@ -285,3 +297,62 @@ def test_missing_required_path_field_is_a_schema_correction(checkpoint, edit):
     assert not isinstance(caught.value, SafetyError)
     assert 'required non-empty field' in str(caught.value)
     assert str(caught.value).endswith('Return one complete BuildProposal.')
+
+
+def test_approved_policy_budget_defaults():
+    from factory.governance.policy import Policy
+
+    rules = Policy()
+    assert (rules.builder_max_output_tokens, rules.builder_max_turns) == (16000, 40)
+    assert (rules.per_task_retries, rules.split_attempts, rules.max_job_attempts) == (3, 4, 30)
+    assert (rules.whole_file_limit, rules.excerpt_budget) == (64000, 160000)
+    assert rules.timeout_for('build') == 600
+
+
+@pytest.mark.parametrize('kind', ['create', 'write', 'replace', 'insert_before', 'insert_after', 'append', 'prepend'])
+def test_required_edit_content_is_not_silently_defaulted(checkpoint, kind):
+    job, tools = checkpoint
+    with pytest.raises(FactoryError, match='required field. Return one complete BuildProposal.'):
+        apply_proposal(job, tools, proposal([FileEdit(path='server.py', kind=kind, old='anchor')]))
+
+
+def test_checkpoint_subject_names_task_part_and_commits_only_proposal_paths(checkpoint):
+    job, tools = checkpoint
+    tools.write('README.md', 'unrelated dirty work\n')
+    tools.run(['git', 'add', '--', 'README.md'])
+    result = apply_proposal(job, tools, proposal([
+        FileEdit(path='server.py', kind='write', content='VALUE = 1\n')]))
+    assert tools.run(['git', 'log', '-1', '--format=%s']).output.strip() == 'checkpoint T1/1'
+    assert tools.run(['git', 'show', '--format=', '--name-only', result.commit]).output.strip() == 'server.py'
+    assert 'README.md' in tools.run(['git', 'status', '--porcelain']).output
+    repeated = apply_proposal(job, tools, proposal([
+        FileEdit(path='server.py', kind='write', content='VALUE = 1\n')]))
+    assert repeated.commit == result.commit
+
+
+def test_deleted_context_marker_survives_reload(checkpoint):
+    job, tools = checkpoint
+    apply_proposal(job, tools, proposal([FileEdit(path='server.py', kind='delete')]))
+    job = type(job).model_validate_json(job.model_dump_json())
+    context = next(item for item in _file_excerpts(job, tools) if item['path'] == 'server.py')
+    assert context['source_kind'] == 'deleted'
+    assert 'Intentionally removed' in context['instruction']
+    assert context['text'] == ''
+
+
+def test_read_inventory_glob_is_capped_at_150_safe_paths(tmp_path):
+    from factory.context.repo import RepositoryReader
+
+    for index in range(151):
+        (tmp_path / f'file_{index}.txt').write_text('safe\n')
+    reader = RepositoryReader(tmp_path, policy())
+    assert len(reader.list_files('file_*.txt')) == 150
+    assert reader.list_files('missing*') == []
+
+
+@pytest.mark.parametrize('value', ['true', 1, None])
+def test_task_complete_requires_actual_boolean(value):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match='task_complete'):
+        proposal([], task_complete=value)

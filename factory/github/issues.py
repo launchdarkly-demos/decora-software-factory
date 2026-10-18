@@ -14,9 +14,10 @@ from temporalio.client import WorkflowExecutionStatus
 from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
-from factory.errors import FactoryError
+from factory.errors import FactoryError, GovernanceError
 from factory.intake.load import parse_issue_body
 from factory.temporal.workflow import FactoryWorkflow
+from factory.tools.safety import check_content
 
 
 class GitHubIssues:
@@ -27,7 +28,8 @@ class GitHubIssues:
         self.root = f"repos/{slug}"
         self.login: str | None = None
 
-    def api(self, endpoint: str, *, method: str = "GET", body: dict | None = None, pages: bool = False):
+    def api(self, endpoint: str, *, method: str = "GET", body: dict | None = None,
+            pages: bool = False, missing_ok: bool = False):
         argv = ["gh", "api", "--hostname", "github.com", endpoint, "--method", method]
         if pages:
             argv += ["--paginate", "--slurp"]
@@ -35,14 +37,22 @@ class GitHubIssues:
             argv += ["--input", "-"]
         result = subprocess.run(argv, input=json.dumps(body) if body is not None else None,
                                 text=True, capture_output=True, timeout=60, check=False)
+        if result.returncode and missing_ok and "HTTP 404" in result.stderr:
+            return None
         if result.returncode:
             raise FactoryError("GitHub request failed; check gh authentication and repository permissions")
+        if not result.stdout.strip():
+            return None
         value = json.loads(result.stdout)
         return [item for page in value for item in page] if pages else value
 
     def ready(self, label: str) -> list[dict]:
         items = self.api(f"{self.root}/issues?state=open&labels={quote(label, safe='')}&per_page=100", pages=True)
         return [item for item in items if "pull_request" not in item]
+
+    def remove_label(self, number: int, label: str) -> None:
+        self.api(f"{self.root}/issues/{number}/labels/{quote(label, safe='')}",
+                 method="DELETE", missing_ok=True)
 
     def approved(self, issue: dict, label: str) -> bool:
         events = self.api(f"{self.root}/issues/{issue['number']}/timeline?per_page=100", pages=True)
@@ -84,21 +94,28 @@ def status_body(job_id: str, snapshot: dict, *, address: str = "localhost:7235",
                   "Answer from the factory terminal using the current pause ID:", "```bash",
                   f".venv/bin/python -m factory temporal answer {job_id} "
                   f"{connection} --pause-id {snapshot['pause_id']} --answer 'YOUR ANSWER'", "```"]
-        plan = job.get("plan") or {}
-        if plan.get("tasks"):
-            lines += ["", "Proposed work:"]
-            for task in plan["tasks"][:12]:
-                lines.append(f"- {task['id']}: {task['description'][:400]}")
+    plan = job.get("plan") or {}
+    if plan.get("tasks"):
+        lines += ["", "Tasks:"]
+        for task in plan["tasks"]:
+            done = "x" if task["id"] in job.get("completed_task_ids", []) else " "
+            lines.append(f"- [{done}] {task['id']}: {task['description'][:400]}")
+    if stage == "await_human":
         if plan.get("migration_plan"):
             lines += ["", "Migration/recovery: " + plan["migration_plan"][:1600]]
     if stage == "failed":
-        lines += ["", "The job stopped. Inspect the local job logs before submitting a new issue."]
+        reason = job.get("error") or "Temporal execution ended without a factory result; inspect worker logs."
+        try:
+            check_content(reason)
+        except GovernanceError:
+            reason = "Failure details contain credential-like content; inspect local job logs."
+        lines += ["", "Failure: " + reason[:1600]]
     pr = job.get("pr") or {}
     if pr.get("url"):
         lines += ["", f"Draft PR: {pr['url']}", "A human must review and merge it."]
     elif stage == "done":
         lines += ["", "Completed with a local PR draft; this worker did not publish to GitHub."]
-    lines += ["", "Editing or relabeling this issue does not start another run. "
+    lines += ["", "After this job finishes, a maintainer can request a retry using the configured retry label. "
               "Comments are not executed as instructions."]
     return "\n".join(lines)
 
@@ -107,8 +124,11 @@ class IssueBridge:
     """Single-host polling bridge. Temporal IDs deduplicate submission; disk tracks ongoing jobs."""
 
     def __init__(self, client, github: GitHubIssues, home: Path, queue: str, label: str, *,
-                 address: str | None = None, namespace: str | None = None):
+                 address: str | None = None, namespace: str | None = None, retry_label: str = "factory:retry"):
         self.client, self.github, self.queue, self.label = client, github, queue, label
+        if retry_label == label:
+            raise FactoryError("Ready and retry labels must differ")
+        self.retry_label = retry_label
         self.address = address or client.service_client.config.target_host
         self.namespace = namespace or client.namespace
         home.mkdir(parents=True, exist_ok=True)
@@ -126,31 +146,52 @@ class IssueBridge:
         temporary.replace(self.path)
 
     async def tick(self):
-        for issue in self.github.ready(self.label):
-            job_id = f"job-gh-{issue['id']}"
-            if job_id in self.state["jobs"]:
-                continue
-            if not self.github.approved(issue, self.label):
-                continue
-            # Freeze the issue text at submission; later comments/edits never change a running request.
-            feature = parse_issue_body(issue["title"], issue.get("body") or "", url=issue["html_url"],
-                                       labels=[item["name"] for item in issue.get("labels", [])])
-            try:
-                await self.client.start_workflow(
-                    FactoryWorkflow.run, feature.model_dump(mode="json"), id=job_id,
-                    task_queue=self.queue, id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
-                )
-            except WorkflowAlreadyStartedError:
-                pass
-            self.state["jobs"][job_id] = {"number": issue["number"], "terminal": False}
-            self.save()
+        for label in (self.label, self.retry_label):
+            for issue in self.github.ready(label):
+                if issue.get("state", "open") != "open":
+                    continue
+                base = f"job-gh-{issue['id']}"
+                related = {key: record for key, record in self.state["jobs"].items()
+                           if key == base or re.fullmatch(re.escape(base) + r"-r\d+", key)}
+                if label == self.label:
+                    if base in related:
+                        continue
+                    job_id = base
+                else:
+                    # Only a finished original job can be retried, with no active retry
+                    # or outstanding label cleanup (including after a lost DELETE response).
+                    if base not in related or any(not record["terminal"] or record.get("remove_retry_label")
+                                                  for record in related.values()):
+                        continue
+                    attempt = max([int(key.rsplit("-r", 1)[1]) for key in related if key != base], default=0) + 1
+                    job_id = f"{base}-r{attempt}"
+                if not self.github.approved(issue, label):
+                    continue
+                # Freeze the original issue anew; later edits never change a running request.
+                feature = parse_issue_body(issue["title"], issue.get("body") or "", url=issue["html_url"],
+                                           labels=[item["name"] for item in issue.get("labels", [])])
+                try:
+                    await self.client.start_workflow(
+                        FactoryWorkflow.run, feature.model_dump(mode="json"), id=job_id,
+                        task_queue=self.queue, id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+                    )
+                except WorkflowAlreadyStartedError:
+                    pass
+                record = {"number": issue["number"], "terminal": False}
+                if label == self.retry_label:
+                    record["remove_retry_label"] = self.retry_label
+                self.state["jobs"][job_id] = record
+                self.save()
         # A stalled job must not prevent updates for unrelated jobs.
         errors = []
         for job_id, record in self.state["jobs"].items():
-            if record["terminal"]:
-                continue
             try:
-                await self.sync_job(job_id, record)
+                if not record["terminal"]:
+                    await self.sync_job(job_id, record)
+                if record.get("remove_retry_label"):
+                    self.github.remove_label(record["number"], record["remove_retry_label"])
+                    del record["remove_retry_label"]
+                    self.save()
             except Exception as exc:
                 errors.append(f"{job_id}: {type(exc).__name__}: {exc}")
         if errors:
@@ -184,7 +225,7 @@ async def watch_issues(client, args):
         except BlockingIOError:
             raise FactoryError("An issue bridge already owns this home") from None
         bridge = IssueBridge(client, GitHubIssues(args.slug), args.home, args.task_queue, args.label,
-                             address=args.address, namespace=args.namespace)
+                             address=args.address, namespace=args.namespace, retry_label=args.retry_label)
         print(f"Watching {args.slug}: label={args.label}, queue={args.task_queue}", flush=True)
         while True:
             try:

@@ -78,10 +78,10 @@ class ToolLayer:
             added = self.run(["git", "add", "--", rel])
             if not added.passed:
                 raise FactoryError(added.output.strip() or f"git add failed for {rel}")
-        staged = self.run(["git", "diff", "--cached", "--quiet"])
+        staged = self.run(["git", "diff", "--cached", "--quiet", "--", *paths])
         if staged.exit_code == 0:
             return self.head_sha()
-        committed = self.run(["git", "commit", "-m", message])
+        committed = self.run(["git", "commit", "--only", "-m", message, "--", *paths])
         if not committed.passed:
             raise FactoryError(committed.output.strip() or "git commit failed")
         return self.head_sha()

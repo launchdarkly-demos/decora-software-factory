@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import sys
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -8,7 +10,7 @@ from pathlib import Path
 
 from factory.clock import Clock, SystemClock
 from factory.context.repo import analyze_repo
-from factory.errors import FactoryError, GovernanceError, IncompleteBuildError
+from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, InfrastructureError, SafetyError
 from factory.execution.portable import PortableWorkspace
 from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import Policy, review_plan, review_ship
@@ -20,7 +22,7 @@ from factory.observability.trace import JsonLog, Tracer
 from factory.orchestrator.graph import COMPONENTS, assert_legal
 from factory.orchestrator.store import JobStore
 from factory.publish.pr import Publisher
-from factory.task_queue import current_task, missing_file_feedback, reopen_task
+from factory.task_queue import current_task, missing_file_feedback, reopen_task, verification_feedback
 from factory.tools.layer import ToolLayer
 from factory.verification.gate import VerificationGate
 
@@ -170,7 +172,7 @@ class Factory:
         except FactoryError as exc:
             transition = Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
         limit = self.policy.timeout_for(job.stage.value)
-        if self.clock.now() - start > limit:
+        if job.stage != Stage.BUILD and self.clock.now() - start > limit:
             return Transition(
                 stage=Stage.FAILED,
                 detail=f"{job.stage.value} timed out",
@@ -266,7 +268,8 @@ class Factory:
                 assert job.worktree is not None
                 info = job.worktree
             except FactoryError as exc:
-                return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+                return Transition(stage=Stage.AWAIT_HUMAN, detail=f"Worktree infrastructure: {exc}",
+                                  resume_stage=Stage.BUILD)
             job.worktree = info
             self._emit(job, "execution", f"worktree {info.path}", branch=info.branch)
         tools = self._tools(job)
@@ -274,14 +277,29 @@ class Factory:
         if task is None:
             return Transition(stage=Stage.VERIFY, detail="all tasks checkpointed")
         if job.builder_calls >= self.policy.max_job_attempts:
-            return Transition(stage=Stage.FAILED, detail="Builder job attempt cap exhausted",
-                              error="Builder job attempt cap exhausted")
-        job.builder_calls += 1
-        # Persist the call budget and task before invoking an external provider.
-        self.store.save(job)
+            detail = f"Job reached max_job_attempts ({self.policy.max_job_attempts})."
+            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
         try:
-            result = self.harness.build(job, tools)
-        except GovernanceError as exc:
+            for infrastructure_attempt in range(4):
+                if job.builder_calls >= self.policy.max_job_attempts:
+                    detail = f"Job reached max_job_attempts ({self.policy.max_job_attempts})."
+                    return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+                job.builder_calls += 1
+                # Every provider invocation counts toward the job cap, including E18 retries.
+                # Infrastructure failures consume neither task corrections nor splits.
+                self.store.save(job)
+                try:
+                    result = self.harness.build(job, tools)
+                    break
+                except (InfrastructureError, TimeoutError, ConnectionError) as exc:
+                    self._emit(job, "specialist_agents", f"E18 {job.id}: {type(exc).__name__}; "
+                               f"infrastructure attempt {infrastructure_attempt + 1}")
+                    if infrastructure_attempt == 3:
+                        return Transition(stage=Stage.AWAIT_HUMAN,
+                                          detail="Builder infrastructure retries exhausted; retry this call.",
+                                          resume_stage=Stage.BUILD)
+                    time.sleep(2 ** infrastructure_attempt)
+        except SafetyError as exc:
             return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
         except IncompleteBuildError as exc:
             return self._task_correction(job, str(exc), split=True)
@@ -290,6 +308,9 @@ class Factory:
         except (OSError, ValueError) as exc:
             return self._task_correction(job, f"Builder could not apply this task ({type(exc).__name__}). "
                                          "Check file paths and the proposal format, then correct this task.")
+        except Exception as exc:
+            return self._task_correction(job, f"Builder call failed: {type(exc).__name__}. "
+                                         "Return one complete BuildProposal.")
         job.builds.append(result)
         job.checkpoint_shas.setdefault(task.id, []).append(result.commit)
         job.task_summaries[task.id] = result.summary[:600]
@@ -314,6 +335,11 @@ class Factory:
         if task.quick_test_targets:
             quick = self.verifier.run_quick(job, tools, task.quick_test_targets)
             job.quick_verify_runs.setdefault(task.id, []).append(quick)
+            if not quick.passed and job.task_retries.get(task.id, 0) < self.policy.per_task_retries:
+                ids = list(dict.fromkeys(re.findall(r"(?:FAILED|ERROR)\s+([^\s]+)", quick.actionable)))
+                feedback = "Failing test ids: " + ", ".join(ids) + "\n"
+                feedback += "\n".join(quick.actionable.splitlines()[-60:])
+                return self._task_correction(job, feedback)
         if task.id not in job.completed_task_ids:
             job.completed_task_ids.append(task.id)
         job.current_task_id = None
@@ -331,11 +357,10 @@ class Factory:
             job.task_split_attempts[task.id] = used_splits + 1
             if used_splits < self.policy.split_attempts:
                 return Transition(stage=Stage.BUILD, detail=feedback)
-            detail = f"Task {task.id} split cap exhausted: {feedback}"
-            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+            # E21: further splits become ordinary corrections after the split allowance.
         used = job.task_retries.get(task.id, 0)
         if used >= self.policy.per_task_retries:
-            detail = f"Task {task.id} retries exhausted: {feedback}"
+            detail = f"Task {task.id} exhausted {self.policy.per_task_retries} retries; last error: {feedback}"
             return Transition(stage=Stage.FAILED, detail=detail, error=detail)
         job.task_retries[task.id] = used + 1
         return Transition(stage=Stage.BUILD, detail=feedback)
@@ -350,8 +375,16 @@ class Factory:
             diff_path.write_text(tools.diff(job.worktree.base_sha))
         if result.passed:
             return Transition(stage=Stage.ENSURE_FLAG, detail="verification passed")
-        reopen_task(job, result.actionable)
-        return self._task_correction(job, result.actionable)
+        missing = [path for path in job.plan.files
+                   if path not in job.deleted_files and not tools._resolve(path).is_file()] if job.plan else []
+        if missing:
+            feedback = missing_file_feedback(job, missing[0])
+            reopen_task(job, missing[0])
+        else:
+            output = "\n".join(report.output for report in result.commands if not report.passed)
+            owner = reopen_task(job, output or result.actionable)
+            feedback = verification_feedback(owner, output or result.actionable, tools)
+        return self._task_correction(job, feedback)
 
     def _ensure_flag(self, job: JobState) -> Transition:
         try:
@@ -392,12 +425,9 @@ class Factory:
         if decision.allowed:
             return Transition(stage=Stage.DRAFT_PR, detail=decision.reason)
         if decision.retry_build:
-            used = job.retries.get("govern", 0)
-            if used >= self.policy.max_retries.get("govern", 1):
-                return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
-            job.retries["govern"] = used + 1
+            job.retries["govern"] = job.retries.get("govern", 0) + 1
             reopen_task(job, decision.reason)
-            return Transition(stage=Stage.BUILD, detail=decision.reason)
+            return self._task_correction(job, decision.reason)
         return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
 
     def _draft_pr(self, job: JobState) -> Transition:

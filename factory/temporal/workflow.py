@@ -35,8 +35,10 @@ class FactoryWorkflow:
             "factory_stage",
             {"job": self.job, "sequence": self.sequence, "operation": operation, "answer": answer},
             result_type=dict[str, Any],
-            start_to_close_timeout=timedelta(minutes=10),
-            schedule_to_close_timeout=timedelta(minutes=35),
+            # One build activity includes a 600s call and up to three E18 retries,
+            # plus checkpoint/quick-test overhead. The model call enforces its own limit.
+            start_to_close_timeout=timedelta(seconds=4 * 600 + 2 * 180),
+            schedule_to_close_timeout=timedelta(hours=3),
             retry_policy=RetryPolicy(initial_interval=timedelta(seconds=1), maximum_attempts=3),
         )
         self.sequence += 1

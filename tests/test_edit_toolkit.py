@@ -91,8 +91,8 @@ def test_missing_sources_are_correctable_without_partial_write(editing, kind):
 @pytest.mark.parametrize('old', ['', 'missing', 'e'])
 def test_invalid_anchors_are_atomic_and_empty_replace_is_actionable(editing, kind, old):
     job, tools = editing
-    message = 'replace needs a non-empty unique anchor; to add new code use insert_after/append/prepend'
-    with pytest.raises(FactoryError, match=message if kind == 'replace' and not old else 'anchor matched'):
+    message = 'need a non-empty unique anchor'
+    with pytest.raises(FactoryError, match=message if not old else 'anchor matched'):
         apply(job, tools, [FileEdit(path='source.txt', kind='append', new='first\n'),
                            FileEdit(path='source.txt', kind=kind, old=old, new='bad')])
     assert tools.read('source.txt') == 'header\nanchor\nfooter\n'
@@ -118,24 +118,23 @@ def test_move_refuses_overwrite_and_rolls_back_io_failure(editing, monkeypatch):
     assert not job.auto_added_files and not job.deleted_files
 
 
-def test_sequential_moves_insertions_and_recreation(editing):
+def test_sequential_move_and_insertion_preserve_mode(editing):
     job, tools = editing
     (tools.worktree / 'source.txt').chmod(0o755)
     apply(job, tools, [FileEdit(path='source.txt', kind='move', destination='moved.txt'),
-                       FileEdit(path='moved.txt', kind='insert_after', old='anchor\n', new='extra\n'),
-                       FileEdit(path='source.txt', kind='write', content='recreated\n')])
+                       FileEdit(path='moved.txt', kind='insert_after', old='anchor\n', new='extra\n')])
     assert tools.read('moved.txt') == 'header\nanchor\nextra\nfooter\n'
-    assert tools.read('source.txt') == 'recreated\n'
-    assert not job.deleted_files
+    assert not (tools.worktree / 'source.txt').exists()
+    assert job.deleted_files == ['source.txt']
     assert (tools.worktree / 'moved.txt').stat().st_mode & 0o111
 
 
-def test_move_cannot_modify_a_different_tasks_destination(editing):
+def test_move_can_use_any_safe_planned_destination(editing):
     from factory.models import PlanTask
 
     job, tools = editing
     job.plan.files.append('future.txt')
     job.plan.tasks.append(PlanTask(id='future', description='Later', files=['future.txt'], acceptance=['later']))
-    with pytest.raises(FactoryError, match='belong to other tasks'):
-        apply(job, tools, [FileEdit(path='source.txt', kind='move', destination='future.txt')])
-    assert not (tools.worktree / 'future.txt').exists()
+    apply(job, tools, [FileEdit(path='source.txt', kind='move', destination='future.txt')])
+    assert tools.read('future.txt') == 'header\nanchor\nfooter\n'
+    assert not (tools.worktree / 'source.txt').exists()

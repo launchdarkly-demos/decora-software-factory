@@ -80,10 +80,10 @@ Rules:
   truncated/source_kind/instruction are
   metadata, never code. Never use excerpt/omitted markers in any edit. Use read_file for
   the exact source range whenever the needed anchor is outside the supplied sections.
-- Every replacement anchor must come from source supplied or read during THIS attempt.
-  After an anchor failure, read fresh source and choose a unique verbatim anchor; do not
-  repeat the failed anchor. Return concrete edits, not an
-  empty proposal or a prose claim of completion.
+- Anchors are checked exactly once against the staged current file at apply, including earlier
+  edits in this proposal. Supplied context and read tools are conveniences, not prerequisites.
+  After an anchor failure, inspect fresh source and choose a unique verbatim anchor.
+  Return task_complete=true with edits=[] if the task is already satisfied at this checkpoint.
 - Follow flag_context for the selected key and whether this job requires a flag.
 - When flag_policy.enabled is false, do not introduce feature flags or guarded rollout.
   Preserve existing application flags; continue implementing functional acceptance tests.

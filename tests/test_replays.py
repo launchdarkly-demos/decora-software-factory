@@ -174,18 +174,18 @@ def test_issue_19_sdk_replay_uses_checkpoint_sections_and_survives_max_turns(
     import agents
     from agents.exceptions import MaxTurnsExceeded
 
-    from factory.harness.openai_agents import EXCERPT_BUDGET, WHOLE_FILE_THRESHOLD, OpenAIAgentsHarness
+    from factory.harness.openai_agents import OpenAIAgentsHarness
     from factory.tools.layer import ToolLayer
 
     monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
     replay = load_replay(19)
     repo = init_repo(tmp_path / 'repo')
-    rules = policy().model_copy(update={'builder_max_turns': 7})
+    rules = policy().model_copy(update={'builder_max_turns': 7, 'whole_file_limit': 12000})
     rules.flags.enabled = False
     if large_existing_file:
         marker = '# model_update Home Room anchor\n'
         source = '# unrelated padding\n' * 2000 + marker + '# unrelated tail\n' * 2000
-        assert len(source) > WHOLE_FILE_THRESHOLD
+        assert len(source) > rules.whole_file_limit
         initial_tools = ToolLayer(repo, rules)
         initial_tools.write('app/project.py', source)
         initial_tools.commit('Existing large project module', ['app/project.py'])
@@ -208,11 +208,14 @@ def test_issue_19_sdk_replay_uses_checkpoint_sections_and_survives_max_turns(
         record = replay['calls'][len(harness.calls)]
         assert data['task']['id'] == 'model_update'
         for text in record.get('feedback', []):
-            assert text in data['govern_feedback']
+            if text == 'Split this task':
+                assert 'ran out of turns' in data['govern_feedback']
+            else:
+                assert text in data['govern_feedback']
         harness.calls.append(data['task']['id'])
         snapshots.append(data['files'])
         checkpoints.append(harness.tools.head_sha())
-        assert sum(len(item['text']) + len(item.get('outline', '')) for item in data['files']) <= EXCERPT_BUDGET
+        assert sum(len(item['text']) + len(item.get('outline', '')) for item in data['files']) <= rules.excerpt_budget
         for path in data['task']['files']:
             sections = [item for item in data['files'] if item['path'] == path]
             assert sections, path
@@ -220,7 +223,7 @@ def test_issue_19_sdk_replay_uses_checkpoint_sections_and_survives_max_turns(
             if current.exists():
                 text = current.read_text()
                 assert all(item['text'] in text for item in sections)
-                if len(text) < WHOLE_FILE_THRESHOLD:
+                if len(text) < rules.whole_file_limit:
                     assert sections[0]['text'] == text
         if record.get('max_turns'):
             assert not harness.job.task_retries

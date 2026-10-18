@@ -1,6 +1,7 @@
 """Deterministic formatting of generated Python before it is committed/tested."""
 from __future__ import annotations
 
+import re
 import sys
 
 from factory.errors import FactoryError
@@ -15,4 +16,5 @@ def format_python(tools: ToolLayer, paths: list[str]) -> None:
         tools._resolve(path)
     report = tools.run([sys.executable, '-m', 'ruff', 'format', '--isolated', '--', *targets])
     if not report.passed:
-        raise FactoryError('Python formatting failed before verification:\n' + report.output)
+        message = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', report.output)
+        raise FactoryError('Python formatting failed before verification:\n' + message)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import difflib
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from factory.errors import FactoryError, GovernanceError
+from factory.errors import FactoryError, SafetyError
 from factory.gitcmd import git_env
 from factory.governance.policy import Policy
 from factory.models import CommandReport
@@ -52,13 +53,15 @@ class ToolLayer:
         path = self._resolve(rel)
         if not path.exists():
             raise FactoryError(f"missing file: {rel}")
-        return path.read_text()
+        with path.open(newline="") as stream:
+            return stream.read()
 
     def write(self, rel: str, content: str) -> None:
         path = self._resolve(rel)
         check_content(content)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        with path.open("w", newline="") as stream:
+            stream.write(content)
 
     def replace(self, rel: str, old: str, new: str) -> None:
         text = self.read(rel)
@@ -75,6 +78,9 @@ class ToolLayer:
             added = self.run(["git", "add", "--", rel])
             if not added.passed:
                 raise FactoryError(added.output.strip() or f"git add failed for {rel}")
+        staged = self.run(["git", "diff", "--cached", "--quiet"])
+        if staged.exit_code == 0:
+            return self.head_sha()
         committed = self.run(["git", "commit", "-m", message])
         if not committed.passed:
             raise FactoryError(committed.output.strip() or "git commit failed")
@@ -103,17 +109,17 @@ class ToolLayer:
 
     def _resolve(self, rel: str) -> Path:
         if rel.startswith("/") or rel.startswith("~"):
-            raise GovernanceError(f"path must stay inside the worktree: {rel}")
+            raise SafetyError(f"Safety violation: path outside the root on `{rel}`.")
         if ".." in Path(rel.replace("\\", "/")).parts:
-            raise GovernanceError(f"path traversal is not allowed: {rel}")
+            raise SafetyError(f"Safety violation: .. on `{rel}`.")
         self.policy.check_path(rel)
         unresolved = self.worktree / rel
         if any(part.is_symlink() for part in [unresolved, *unresolved.parents]
                if part.is_relative_to(self.worktree)):
-            raise GovernanceError(f"symlink paths are not allowed: {rel}")
+            raise SafetyError(f"Safety violation: symlink path on `{rel}`.")
         path = unresolved.resolve()
         if not path.is_relative_to(self.worktree):
-            raise GovernanceError(f"path escapes the worktree: {rel}")
+            raise SafetyError(f"Safety violation: symlink escape on `{rel}`.")
         self.policy.check_path(path.relative_to(self.worktree).as_posix())
         return path
 
@@ -134,16 +140,21 @@ class ToolLayer:
 
 
 def _anchor_error(rel: str, text: str, old: str, count: int) -> str:
-    preview = old.replace("\n", "\\n")
-    if len(preview) > 120:
-        preview = preview[:120] + "..."
-    first = next((line for line in old.splitlines() if line.strip()), "")
-    hint = ""
-    if first and text.count(first) == 1:
-        start = text.find(first)
-        following = text[start : start + 180].replace("\n", "\\n")
-        hint = (
-            f" That line exists once. Use only this single line as old, copied exactly: {first!r}. "
-            f"Text at that line: {following}"
-        )
-    return f"{rel} anchor matched {count} times. Anchor was: {preview}.{hint}"
+    if not old:
+        return ("`replace` and `insert_*` need a non-empty unique anchor. "
+                "To add code without one, use `append` or `prepend`.")
+    if count:
+        positions = []
+        offset = 0
+        for _ in range(count):
+            offset = text.index(old, offset)
+            positions.append(str(text.count("\n", 0, offset) + 1))
+            offset += len(old)
+        return (f"{rel}: anchor matched {count} times; line numbers: {', '.join(positions)}. "
+                "Extend the anchor until it's unique.")
+    anchor_lines = old.splitlines() or [old]
+    ranked = sorted(enumerate(text.splitlines(), 1), key=lambda pair: (
+        -max(difflib.SequenceMatcher(None, line, pair[1]).ratio() for line in anchor_lines), pair[0]))[:3]
+    nearest = "\n".join(f"{number}: {line}" for number, line in ranked)
+    return (f"{rel}: anchor matched 0 times. Anchor (first 200 characters): {old[:200]!r}\n"
+            f"Closest matching lines:\n{nearest}\nAnchors must occur exactly once in the current file.")

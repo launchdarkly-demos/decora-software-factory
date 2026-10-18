@@ -122,7 +122,7 @@ def test_invalid_later_anchor_leaves_all_files_untouched(tmp_path):
 
 
 @pytest.mark.parametrize('read_source', [False, True])
-def test_builder_requires_observed_source_and_accepts_tool_reads(tmp_path, monkeypatch, read_source):
+def test_builder_accepts_unobserved_source_and_tool_reads(tmp_path, monkeypatch, read_source):
     import asyncio
     import json
 
@@ -136,7 +136,8 @@ def test_builder_requires_observed_source_and_accepts_tool_reads(tmp_path, monke
     repo = init_repo(tmp_path / 'repo')
     source = '# padding for source context\n' * 500 + 'VALUE = 1\n' + '# tail padding\n' * 1000
     (repo / 'server.py').write_text(source)
-    tools = ToolLayer(repo, policy())
+    rules = policy().model_copy(update={'whole_file_limit': 12000})
+    tools = ToolLayer(repo, rules)
     job = bare_job(tmp_path, plan=low_plan(files=['server.py']),
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
 
@@ -155,14 +156,9 @@ def test_builder_requires_observed_source_and_accepts_tool_reads(tmp_path, monke
 
     monkeypatch.setattr(agents.Runner, 'run_sync', run)
     harness = OpenAIAgentsHarness(policy=policy())
-    if read_source:
-        result = harness.build(job, tools)
-        assert 'server.py' in result.changed_files
-        assert 'VALUE = 2\n' in tools.read('server.py')
-    else:
-        with pytest.raises(FactoryError, match='not read in this attempt'):
-            harness.build(job, tools)
-        assert tools.read('server.py') == source
+    result = harness.build(job, tools)
+    assert 'server.py' in result.changed_files
+    assert 'VALUE = 2\n' in tools.read('server.py')
 
 
 def test_preview_marker_is_rejected_before_any_edit(tmp_path):
@@ -177,7 +173,7 @@ def test_preview_marker_is_rejected_before_any_edit(tmp_path):
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
     proposal = BuildProposal(summary='change', commit_message='change', edits=[
         FileEdit(path='new.py', kind='write', content='... [excerpt; use read_file for more].')])
-    with pytest.raises(FactoryError, match='preview markers are not source code'):
+    with pytest.raises(FactoryError, match='Content contains preview markers'):
         apply_proposal(job, tools, proposal)
     assert not (repo / 'new.py').exists()
 
@@ -204,7 +200,7 @@ def test_builder_formats_generated_python_before_commit_and_verification(tmp_pat
     assert tools.run(['git', 'status', '--porcelain', '--untracked-files=no']).output.strip() == ''
 
 
-def test_builder_payload_is_current_task_only_and_output_cap_is_policy(tmp_path, monkeypatch):
+def test_builder_payload_prioritizes_current_task_and_output_cap_is_policy(tmp_path, monkeypatch):
     import json
 
     import agents
@@ -231,8 +227,8 @@ def test_builder_payload_is_current_task_only_and_output_cap_is_policy(tmp_path,
         assert data['task']['id'] == 'now'
         assert data['task']['files'] == ['server.py']
         assert data['completed_tasks'] == [{'id': 'done', 'summary': 'Completed summary'}]
-        assert [item['path'] for item in data['files']] == ['server.py']
-        assert 'future.py' not in payload
+        assert [item['path'] for item in data['files']] == ['server.py', 'done.py', 'future.py']
+        assert data['limits'] == {'output_tokens': 1234, 'turns': 40}
         assert agent.model_settings.max_tokens == 1234
         return SimpleNamespace(raw_responses=[], final_output=BuildProposal(
             summary='Update value', commit_message='Update value',
@@ -259,9 +255,9 @@ def test_sdk_cutoff_is_classified_as_a_split_request(tmp_path, monkeypatch):
         raise RuntimeError('max_output_tokens reached; incomplete response')
 
     monkeypatch.setattr(agents.Runner, 'run_sync', run)
-    with pytest.raises(IncompleteBuildError, match='smaller part now') as caught:
+    with pytest.raises(IncompleteBuildError, match='smaller part of this task now') as caught:
         OpenAIAgentsHarness(policy=policy()).build(job, ToolLayer(repo, policy()))
-    assert 'same task' in str(caught.value)
+    assert '`task_complete=false`' in str(caught.value)
     assert 'replace snippet' not in str(caught.value)
 
 
@@ -282,7 +278,7 @@ def test_invalid_complete_proposal_is_a_correction_but_provider_cutoff_is_a_spli
     with pytest.raises(FactoryError) as caught:
         OpenAIAgentsHarness(policy=policy()).build(job, ToolLayer(repo, policy()))
     assert isinstance(caught.value, IncompleteBuildError) == truncated
-    assert ('split' if truncated else 'invalid proposal format') in str(caught.value)
+    assert ('cut off' if truncated else 'Return one complete BuildProposal.') in str(caught.value)
 
 
 def test_replace_accepts_anchor_in_supplied_large_file_section(tmp_path, monkeypatch):
@@ -298,7 +294,8 @@ def test_replace_accepts_anchor_in_supplied_large_file_section(tmp_path, monkeyp
     repo = init_repo(tmp_path / 'repo')
     source = '# filler\n' * 3000 + 'def target_symbol():\n    return 1\n' + '# tail\n' * 3000
     (repo / 'server.py').write_text(source)
-    tools = ToolLayer(repo, policy())
+    rules = policy().model_copy(update={'whole_file_limit': 12000})
+    tools = ToolLayer(repo, rules)
     job = bare_job(tmp_path, plan=low_plan(files=['server.py'], tasks=[
         PlanTask(id='change', description='Update target_symbol', files=['server.py'], acceptance=['Return 2'])]),
         worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
@@ -358,7 +355,7 @@ def test_builder_correction_refreshes_source_and_includes_every_task_file(tmp_pa
 
 def test_sections_and_explicit_reads_support_source_beyond_inventory_limit(tmp_path):
     from factory.context.repo import RepositoryReader
-    from factory.harness.openai_agents import EXCERPT_BUDGET, _file_excerpts
+    from factory.harness.openai_agents import _file_excerpts
     from factory.models import PlanTask
     from factory.tools.layer import ToolLayer
     from tests.support import low_plan, policy
@@ -373,5 +370,5 @@ def test_sections_and_explicit_reads_support_source_beyond_inventory_limit(tmp_p
         PlanTask(id='large', description='Change target_symbol', files=['large.py'], acceptance=['Return 2'])]))
     files = _file_excerpts(job, ToolLayer(tmp_path, policy()))
     assert any('def target_symbol():\n    return 1\n' in item['text'] for item in files)
-    assert sum(len(item['text']) + len(item.get('outline', '')) for item in files) <= EXCERPT_BUDGET
+    assert sum(len(item['text']) + len(item.get('outline', '')) for item in files) <= policy().excerpt_budget
     assert all(item['text'] in source for item in files)

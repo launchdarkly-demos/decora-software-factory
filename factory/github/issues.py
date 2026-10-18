@@ -152,9 +152,9 @@ class IssueBridge:
             try:
                 await self.sync_job(job_id, record)
             except Exception as exc:
-                errors.append(type(exc).__name__)
+                errors.append(f"{job_id}: {type(exc).__name__}: {exc}")
         if errors:
-            raise FactoryError(f"Could not sync {len(errors)} job(s); retry next poll")
+            raise FactoryError(f"Could not sync {len(errors)} job(s); retry next poll: " + "; ".join(errors))
 
     async def sync_job(self, job_id: str, record: dict):
         # Keep following accepted jobs even after the issue is closed or its label removed.
@@ -192,7 +192,7 @@ async def watch_issues(client, args):
             except Exception as exc:
                 if args.once:
                     raise
-                print(f"Issue sync failed ({type(exc).__name__}); retrying next poll", flush=True)
+                print(f"Issue sync failed ({type(exc).__name__}): {exc}; retrying next poll", flush=True)
             if args.once:
                 return
             await asyncio.sleep(args.interval)

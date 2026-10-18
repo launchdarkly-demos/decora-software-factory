@@ -150,3 +150,26 @@ def test_status_commands_target_watcher_connection(namespace):
                        address='localhost:7236', namespace=namespace)
     assert '--address localhost:7236' in body
     assert ('--namespace factory-demo' in body) == (namespace != 'default')
+
+
+def test_sync_error_identifies_job_and_message_and_next_poll_recovers(tmp_path):
+    async def scenario():
+        gh, temporal = FakeGitHub(), FakeTemporal()
+        bridge = IssueBridge(temporal, gh, tmp_path, 'queue', 'factory:ready')
+        gh.fail_comment = True
+        with pytest.raises(FactoryError) as caught:
+            await bridge.tick()
+        assert 'job-gh-42' in str(caught.value)
+        assert 'FactoryError' in str(caught.value)
+        # Preserve the underlying reason, beyond its exception class.
+        async def unavailable(job_id, record):
+            raise FactoryError('GitHub temporarily unavailable')
+        original = bridge.sync_job
+        bridge.sync_job = unavailable
+        with pytest.raises(FactoryError, match='job-gh-42: FactoryError: GitHub temporarily unavailable'):
+            await bridge.tick()
+        bridge.sync_job = original
+        gh.fail_comment = False
+        await bridge.tick()
+        assert gh.posts
+    asyncio.run(scenario())

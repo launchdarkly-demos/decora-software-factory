@@ -6,10 +6,12 @@ import os
 import re
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from factory.agents.apply import apply_proposal, check_proposal_safety
 from factory.agents.prompts import BUILDER_INSTRUCTIONS, PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
 from factory.context.repo import RepositoryReader
-from factory.errors import FactoryError, GovernanceError, IncompleteBuildError
+from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, InfrastructureError
 from factory.governance.policy import Policy, flag_required, selected_flag_key
 from factory.harness.repository_tools import repository_tools
 from factory.harness.tokens import charge_provider
@@ -76,14 +78,14 @@ class OpenAIAgentsHarness:
         if task is None:
             raise FactoryError("No pending Builder task")
         files = _file_excerpts(job, tools)
-        observed: dict[str, list[str]] = {}
-        for item in files:
-            observed.setdefault(item["path"], []).append(item["text"])
         payload = json.dumps(
             {
                 "task": task.model_dump(),
+                "limits": {"output_tokens": self.policy.builder_max_output_tokens,
+                           "turns": self.policy.builder_max_turns},
                 "completed_tasks": [{"id": task_id, "summary": job.task_summaries.get(task_id, "")[:600]}
-                                    for task_id in job.completed_task_ids],
+                                    for task_id in [item.id for item in (job.plan.tasks if job.plan else [])
+                                                    if item.id in job.completed_task_ids]],
                 "files": files,
                 "govern_feedback": job.govern_feedback,
                 "flag_policy": self.policy.flags.model_dump(),
@@ -97,32 +99,27 @@ class OpenAIAgentsHarness:
             name="Builder",
             instructions=BUILDER_INSTRUCTIONS,
             output_type=BuildProposal,
-            tools=repository_tools(tools.worktree, tools.policy, observed=observed),
+            tools=repository_tools(tools.worktree, tools.policy),
             model=self.model,
             model_settings=ModelSettings(max_tokens=self.policy.builder_max_output_tokens),
         )
         try:
-            result = _run_agent(agent, payload, max_turns=self.policy.builder_max_turns)
+            result = _run_agent(agent, payload, max_turns=self.policy.builder_max_turns,
+                                timeout=self.policy.timeout_for("build"))
         except GovernanceError:
             raise
         except Exception as exc:
-            raise _builder_failure(exc) from None
+            raise _builder_failure(exc, self.policy.builder_max_output_tokens, self.policy.builder_max_turns) from None
         charge_provider(job, result, payload, "")
         output = result.final_output
         for response in getattr(result, "raw_responses", []):
             if getattr(response, "status", None) == "incomplete":
-                raise IncompleteBuildError("Builder output incomplete; split this task into smaller parts.")
+                raise IncompleteBuildError(_cutoff_feedback(self.policy.builder_max_output_tokens))
         try:
             proposal = output if isinstance(output, BuildProposal) else BuildProposal.model_validate(output)
-        except ValueError:
-            raise FactoryError("Builder output has an invalid proposal format. "
-                               "Return a complete BuildProposal with concrete file edits.") from None
+        except ValueError as exc:
+            raise FactoryError(_validation_feedback(exc)) from None
         check_proposal_safety(tools, proposal)
-        _reject_oversized_edits(proposal)
-        for edit in proposal.edits:
-            if edit.kind == "replace" and not any(edit.old in text for text in observed.get(edit.path, [])):
-                raise FactoryError(f"{edit.path}: replacement anchor was not read in this attempt. "
-                                   "Use read_file with its exact line range before proposing the replacement.")
         return apply_proposal(job, tools, proposal)
 
     def review(self, job: JobState, tools: ToolLayer):
@@ -164,10 +161,6 @@ def _feature_for_model(job: JobState) -> dict[str, object]:
     return data
 
 
-WHOLE_FILE_THRESHOLD = 12_000
-EXCERPT_BUDGET = 40_000
-
-
 def _file_excerpts(job: JobState, tools: ToolLayer) -> list[dict[str, str]]:
     """Refresh from disk on EVERY call, including split and correction calls.
 
@@ -178,14 +171,17 @@ def _file_excerpts(job: JobState, tools: ToolLayer) -> list[dict[str, str]]:
     if task is None:
         return []
     reader = RepositoryReader(tools.worktree, tools.policy)
-    names = list(dict.fromkeys(task.files))
+    planned = job.plan.files if job.plan else []
+    names = list(dict.fromkeys([*(path for path in planned if path in task.files), *task.files, *planned]))
     clues = " ".join([task.description, *task.acceptance, job.govern_feedback or ""])
     words = set(re.findall(r"[A-Za-z_][A-Za-z_0-9]{2,}", clues))
     feedback_words = set(re.findall(r"[A-Za-z_][A-Za-z_0-9]{2,}", job.govern_feedback or ""))
     excerpts: list[dict[str, str]] = []
-    budget = EXCERPT_BUDGET
-    for index, rel in enumerate(names):
-        allowance = min(WHOLE_FILE_THRESHOLD, budget // (len(names) - index))
+    budget = tools.policy.excerpt_budget
+    for rel in names:
+        if budget <= 0:
+            break
+        allowance = min(tools.policy.whole_file_limit, budget)
         try:
             path = reader.resolve(rel)
             if not path.exists():
@@ -205,15 +201,15 @@ def _file_excerpts(job: JobState, tools: ToolLayer) -> list[dict[str, str]]:
             continue
         lines = text.splitlines(keepends=True)
         symbols = [i for i, line in enumerate(lines) if re.match(r"\s*(?:async )?(?:def|class) ", line)]
-        outline = "".join(f"{i + 1}: {lines[i]}" for i in symbols)[:min(1500, allowance // 4)]
+        outline = "".join(f"{i + 1}: {lines[i]}" for i in symbols)[:allowance]
         allowance -= len(outline)
         budget -= len(outline)
         ranked = sorted(range(len(lines)), key=lambda i: (
             -sum((4 if word in feedback_words else 1) for word in words
                  if re.search(r"\b" + re.escape(word) + r"\b", lines[i])), i))
-        # Prioritize named symbols/anchors, then include a header and EOF for additions.
-        centers = [i for i in ranked if any(word in lines[i] for word in words)][:8]
-        centers += [0, len(lines) - 1, *symbols]
+        # Keep the start/end, then rank source by task and correction symbols.
+        centers = [0, len(lines) - 1]
+        centers += [i for i in ranked if any(word in lines[i] for word in words)][:8] + symbols
         kept: set[int] = set()
         for center in centers:
             region = set(range(max(0, center - 6), min(len(lines), center + 18))) - kept
@@ -248,28 +244,42 @@ def _file_excerpts(job: JobState, tools: ToolLayer) -> list[dict[str, str]]:
     return excerpts
 
 
-def _reject_oversized_edits(proposal: BuildProposal) -> None:
-    for edit in proposal.edits:
-        if edit.kind == "replace" and not edit.old:
-            raise FactoryError(f"{edit.path}: replace needs a non-empty unique anchor; "
-                               "to add new code use insert_after/append/prepend")
-        if edit.kind == "replace" and (len(edit.old) > 16000 or len(edit.new) > 16000):
-            raise FactoryError(f"{edit.path}: use a nonempty, focused replace anchor and read exact source first.")
+def _cutoff_feedback(tokens: int) -> str:
+    return (f"Your response was cut off at {tokens} tokens. Return a smaller part of this task now with "
+            "`task_complete=false`; the rest follows in the next call. "
+            "Prefer insert/append over rewriting whole files.")
 
 
-def _builder_failure(exc: BaseException) -> FactoryError:
+def _validation_feedback(exc: ValueError) -> str:
+    if isinstance(exc, ValidationError):
+        reasons = [".".join(map(str, item["loc"])) + ": " + item["msg"]
+                   for item in exc.errors(include_input=False, include_url=False)]
+        return "\n".join([*reasons, "Return one complete BuildProposal."])
+    return "Proposal schema invalid. Return one complete BuildProposal."
+
+
+def _builder_failure(exc: BaseException, tokens: int = 16000, turns: int = 40) -> FactoryError:
     text = str(exc).lower()
-    if exc.__class__.__name__ == "MaxTurnsExceeded" or any(
-        marker in text for marker in ("max_output_tokens", "max_tokens", "incomplete", "token limit")
+    if exc.__class__.__name__ == "MaxTurnsExceeded":
+        return IncompleteBuildError(f"You ran out of turns ({turns}). The current file text is included; "
+                                    "return the next part of the task directly, using at most 3 reads.")
+    cutoff_markers = ("max_output_tokens", "max_tokens", "incomplete", "token limit", "finish_reason='length'")
+    if any(marker in text for marker in cutoff_markers):
+        return IncompleteBuildError(_cutoff_feedback(tokens))
+    if isinstance(exc, ValidationError):
+        return FactoryError(_validation_feedback(exc))
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", 0) or 0
+    transport_markers = ("timeout", "connection", "connecterror", "networkerror", "readerror", "writeerror",
+                         "protocolerror", "internalserver")
+    if isinstance(exc, (TimeoutError, ConnectionError)) or status >= 500 or any(
+        marker in type(exc).__name__.lower() for marker in transport_markers
     ):
-        return IncompleteBuildError(
-            "Builder output incomplete. Split this task: return a smaller part now with "
-            "task_complete=false; remaining work follows in the next call for the same task.")
-    return FactoryError(f"Builder call failed: {exc.__class__.__name__}")
+        return InfrastructureError(f"Builder infrastructure error: {type(exc).__name__}")
+    return FactoryError(f"Builder call failed: {exc.__class__.__name__}. Return one complete BuildProposal.")
 
 
 
-def _run_agent(agent, payload: str, *, max_turns: int = 20):
+def _run_agent(agent, payload: str, *, max_turns: int = 20, timeout: float | None = None):
     """Keep HTTP connection pools scoped to the activity's event loop."""
     from agents import RunConfig, Runner
     from agents.models.openai_provider import OpenAIProvider
@@ -277,12 +287,22 @@ def _run_agent(agent, payload: str, *, max_turns: int = 20):
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    client = AsyncOpenAI()
+    client = AsyncOpenAI(max_retries=0, timeout=timeout) if timeout is not None else AsyncOpenAI()
     try:
-        return Runner.run_sync(
-            agent, payload, max_turns=max_turns,
-            run_config=RunConfig(model_provider=OpenAIProvider(openai_client=client))
-        )
+        def cancel_call():
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+
+        timer = loop.call_later(timeout, cancel_call) if timeout is not None else None
+        try:
+            return Runner.run_sync(
+                agent, payload, max_turns=max_turns,
+                run_config=RunConfig(model_provider=OpenAIProvider(openai_client=client)))
+        except asyncio.CancelledError:
+            raise TimeoutError("Builder call timed out") from None
+        finally:
+            if timer is not None:
+                timer.cancel()
     finally:
         loop.run_until_complete(client.close())
         loop.close()

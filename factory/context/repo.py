@@ -60,7 +60,8 @@ class RepositoryReader:
         path = self.resolve(rel)
         if path.suffix not in TEXT_SUFFIXES and path.name not in {'Makefile', 'Dockerfile'}:
             raise GovernanceError('file is not readable source')
-        text = path.read_text(errors='replace')
+        with path.open(errors='replace', newline='') as stream:
+            text = stream.read()
         check_content(text)
         return text
 

@@ -103,15 +103,15 @@ def test_split_cap_is_separate_from_task_budget_and_overall_call_cap(tmp_path):
     job = make_factory(tmp_path, repo, ScriptedHarness([queued_plan(1)], builds=[cutoff]),
                        policy=rules).run(feature())
     assert job.stage == Stage.FAILED
-    assert job.builder_calls == 2
-    assert job.task_retries == {}
-    assert 'split cap exhausted' in job.error
+    assert job.builder_calls == 3
+    assert job.task_retries == {"T0": 1}
+    assert "exhausted 1 retries" in job.error
     rules.max_job_attempts = 1
     job = make_factory(tmp_path, repo, ScriptedHarness([queued_plan(1)], builds=[cutoff]),
                        policy=rules).run(feature())
     assert job.stage == Stage.FAILED
     assert job.builder_calls == 1
-    assert 'job attempt cap' in job.error
+    assert 'Job reached max_job_attempts (1).' in job.error
 
 
 def test_missing_task_file_feedback_names_coverage_and_waits_for_later_tasks(tmp_path):
@@ -123,7 +123,7 @@ def test_missing_task_file_feedback_names_coverage_and_waits_for_later_tasks(tmp
 
     def build(job, tools):
         if job.builder_calls == 2:
-            assert 'Create tests/migrations/test_conversion.py covering:' in job.govern_feedback
+            assert 'Create `tests/migrations/test_conversion.py` covering:' in job.govern_feedback
             assert 'Preserve legacy data' in job.govern_feedback
             return apply_proposal(job, tools, BuildProposal(summary='conversion tests', commit_message='Add tests',
                 edits=[FileEdit(path=plan.files[-1], kind='write',
@@ -155,7 +155,7 @@ def test_full_failure_routes_to_owning_task_without_replaying_other_tasks(tmp_pa
     assert len(job.verify_runs) == 2
 
 
-def test_optional_quick_failure_is_recorded_without_spending_retries(tmp_path):
+def test_exhausted_quick_failure_is_advisory(tmp_path):
     repo = init_repo(tmp_path / 'repo')
     plan = queued_plan(1)
     plan.tasks[0].quick_test_targets = ['tests/nested/test_value.py']
@@ -172,6 +172,7 @@ def test_optional_quick_failure_is_recorded_without_spending_retries(tmp_path):
                             content='from app.part_0 import VALUE\n\ndef test_required():\n    assert VALUE == 1\n')]))
 
     job = make_factory(tmp_path, repo, ScriptedHarness([plan], builds=[build]),
+                       policy=policy().model_copy(update={"per_task_retries": 0}),
                        verifier=VerificationGate(repo, tmp_path / 'home')).run(feature())
     assert job.stage == Stage.DONE
     assert job.task_retries == {}
@@ -206,7 +207,7 @@ def test_secret_is_fatal_before_writing_any_file(tmp_path, monkeypatch):
     tools = ToolLayer(repo, policy())
     job = bare_job(tmp_path, plan=low_plan(),
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
-    with pytest.raises(GovernanceError, match='Secret detected'):
+    with pytest.raises(GovernanceError, match='Safety violation: credential-like content'):
         apply_proposal(job, tools, BuildProposal(summary='x', commit_message='x', edits=[
             FileEdit(path='safe.py', kind='write', content='VALUE = 1\n'),
             FileEdit(path='leak.py', kind='write', content='KEY = "private-test-provider-key"')]))
@@ -285,16 +286,15 @@ def test_failure_paths_route_to_owner_in_worktrees_with_spaces(tmp_path, prefix)
     assert job.completed_task_ids == ['T1', 'T2']
 
 
-def test_proposal_cannot_implement_another_planned_task(tmp_path):
+def test_task_can_edit_any_safe_planned_file(tmp_path):
     repo = init_repo(tmp_path / 'repo')
     tools = ToolLayer(repo, policy())
     job = bare_job(tmp_path, plan=queued_plan(2),
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
-    with pytest.raises(FactoryError, match='Implement only task T0'):
-        apply_proposal(job, tools, BuildProposal(summary='Too much', commit_message='Too much', edits=[
-            FileEdit(path='app/part_0.py', kind='write', content='VALUE = 1\n'),
-            FileEdit(path='app/part_1.py', kind='write', content='VALUE = 2\n')]))
-    assert not (repo / 'app/part_0.py').exists()
+    apply_proposal(job, tools, BuildProposal(summary='Shared edit', commit_message='Shared edit', edits=[
+        FileEdit(path='app/part_0.py', kind='write', content='VALUE = 1\n'),
+        FileEdit(path='app/part_1.py', kind='write', content='VALUE = 2\n')]))
+    assert 'app/part_1.py' in job.plan.tasks[0].files
     assert not job.auto_added_files
 
 

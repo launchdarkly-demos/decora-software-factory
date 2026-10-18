@@ -1,10 +1,12 @@
 # Explicit opt-in policy for real Decora draft PRs. Publishing still requires --push.
 version: 1
 builder_max_turns: 40
-builder_max_output_tokens: 6000
+builder_max_output_tokens: 16000
 per_task_retries: 3
-max_job_attempts: 25
-split_attempts: 3
+max_job_attempts: 30
+split_attempts: 4
+whole_file_limit: 64000
+excerpt_budget: 160000
 max_retries:
   review: 1
   govern: 1
@@ -15,7 +17,7 @@ stage_timeout_seconds:
   context: 60
   plan: 120
   govern_plan: 30
-  build: 180
+  build: 600
   verify: 600
   ensure_flag: 90
   review: 120

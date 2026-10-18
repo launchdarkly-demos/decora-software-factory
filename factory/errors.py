@@ -10,5 +10,13 @@ class GovernanceError(FactoryError):
     """Policy refused a command, a path, or a publish."""
 
 
+class SafetyError(GovernanceError):
+    """Fatal Builder safety violation (E16 or E17)."""
+
+
 class RecipeError(FactoryError):
     """The builder has no safe change for this plan."""
+
+
+class InfrastructureError(FactoryError):
+    """Retry provider transport failures without consuming task budgets."""

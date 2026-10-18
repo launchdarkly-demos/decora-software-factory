@@ -3,8 +3,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from factory.models import BuildResult, ReviewReport, Stage
 from factory.orchestrator.graph import LEGAL
 from tests.support import (
@@ -50,7 +48,7 @@ def test_verify_retries_exhausted_fails_without_a_pr(tmp_path: Path) -> None:
 
     assert job.stage == Stage.FAILED
     assert job.pr is None
-    assert "retries exhausted" in (job.error or "")
+    assert "exhausted 3 retries" in (job.error or "")
     assert len(job.verify_runs) == 4
 
 
@@ -129,14 +127,15 @@ def test_review_changes_requested_loops_to_the_builder(tmp_path: Path) -> None:
     assert len(job.builds) == 2
 
 
-def test_stage_timeout_fails_the_job(tmp_path: Path) -> None:
+def test_build_timeout_retries_infrastructure_then_pauses(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("factory.orchestrator.machine.time.sleep", lambda _: None)
     repo = init_repo(tmp_path / "decor")
     clock = _JumpClock()
 
     class SlowHarness(ScriptedHarness):
         def build(self, job, tools):
             clock.advance(500)
-            return super().build(job, tools)
+            raise TimeoutError("call timeout")
 
     rules = policy_with_build_timeout(10)
     job = make_factory(
@@ -148,21 +147,24 @@ def test_stage_timeout_fails_the_job(tmp_path: Path) -> None:
         policy=rules,
     ).run(feature())
 
-    assert job.stage == Stage.FAILED
-    assert job.error is not None
-    assert "timed out" in job.error
+    assert job.stage == Stage.AWAIT_HUMAN
+    assert job.task_retries == {}
+    assert job.builder_calls == 4
+    assert "infrastructure retries exhausted" in job.question
     assert job.pr is None
 
 
-def test_unexpected_build_error_removes_the_worktree(tmp_path: Path) -> None:
+def test_unexpected_build_error_uses_task_budget_and_removes_the_worktree(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor")
 
     class Boom(ScriptedHarness):
         def build(self, job, tools):
             raise RuntimeError("boom")
 
-    with pytest.raises(RuntimeError, match="boom"):
-        make_factory(tmp_path, repo, Boom([low_plan()])).run(feature())
+    job = make_factory(tmp_path, repo, Boom([low_plan()])).run(feature())
+    assert job.stage == Stage.FAILED
+    assert "exhausted 3 retries" in job.error
+    assert "RuntimeError" in job.error
 
     assert list((tmp_path / "home" / "worktrees").glob("job-*")) == []
     leftover = subprocess.run(

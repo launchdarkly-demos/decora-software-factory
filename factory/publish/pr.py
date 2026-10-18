@@ -146,16 +146,20 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
             lines.extend(["", "Planned tasks:"])
             for task in plan.tasks:
                 lines.append(f"- {task.id}: {task.description} (depends on: {', '.join(task.depends_on) or 'none'})")
-        if plan.requires_migration:
-            lines.extend(["", "Migration and recovery:", "", plan.migration_plan])
         if plan.context_files:
             lines.append("")
             lines.append("Context files the planner saw:")
             for path in plan.context_files:
                 lines.append(f"- `{path}`")
-    if job.auto_added_files:
-        lines.extend(["", "## Files added to the plan automatically", ""])
-        lines.extend(f"- `{path}`" for path in job.auto_added_files)
+        if plan.requires_migration:
+            lines.extend(["", "## Migration and recovery", "", plan.migration_plan])
+    lines.extend(["", "## Files added to the plan automatically", ""])
+    for path in job.auto_added_files:
+        task_id = job.auto_added_file_tasks.get(path) or next(
+            (task.id for task in plan.tasks if path in task.files), "unknown") if plan else "unknown"
+        lines.append(f"- `{path}` (task {task_id})")
+    if not job.auto_added_files:
+        lines.append("None.")
     lines.extend(["", "## Test evidence", ""])
     if not job.verify_runs:
         lines.append("No verification run was recorded.")
@@ -167,6 +171,12 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
         lines.append(result.actionable[-2500:])
         lines.append("```")
         lines.append("")
+    for task_id, attempts in job.quick_verify_runs.items():
+        for index, result in enumerate(attempts, 1):
+            state = "passed" if result.passed else "failed"
+            advisory = " (advisory after retries exhausted)" if not result.passed and index == len(attempts) else ""
+            lines.extend([f"### Task {task_id} quick test {index}: {state}{advisory}", "", "```text",
+                          result.actionable, "```", ""])
     lines.extend(["## Review findings", ""])
     if review is None:
         lines.append("No review was recorded.")
@@ -184,16 +194,15 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
         lines.append(f"- {risk}")
     lines.extend(["", "## Retries", ""])
     lines.append(f"- Builder calls: {job.builder_calls}")
-    for task_id, count in sorted(job.task_retries.items()):
-        lines.append(f"- Task {task_id} corrections: {count}")
-    for task_id, count in sorted(job.task_split_attempts.items()):
-        lines.append(f"- Task {task_id} split continuations: {count}")
+    for task in plan.tasks if plan else []:
+        lines.append(f"- Task {task.id} corrections: {job.task_retries.get(task.id, 0)}")
+        lines.append(f"- Task {task.id} split continuations: {job.task_split_attempts.get(task.id, 0)}")
     for name, count in sorted(job.retries.items()):
         lines.append(f"- {name}: {count}")
     lines.extend(
         [
             "",
-            "## Diff",
+            "## Diff summary",
             "",
             "The patch is saved next to this file as `diff.patch`.",
             f"Diff bytes: {len(diff.encode())}.",

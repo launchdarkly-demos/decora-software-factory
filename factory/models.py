@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class Stage(str, Enum):
@@ -104,8 +104,9 @@ class ImplementationPlan(BaseModel):
 
 class FileEdit(BaseModel):
     path: str
-    kind: Literal["write", "replace", "insert_after", "insert_before", "append", "prepend", "delete", "move"]
-    destination: str = Field(default="", description="For move: new repository-relative path; must not exist.")
+    kind: Literal["create", "write", "replace", "insert_after", "insert_before", "append", "prepend", "delete", "move"]
+    destination: str = Field(default="", validation_alias=AliasChoices("destination", "new_path"),
+                             description="For move: new repository-relative path; must not exist.")
     content: str = Field(default="", description="For write: complete file contents.")
     old: str = Field(default="", description="Unique non-empty verbatim anchor for replace/insert_after/insert_before.")
     new: str = Field(default="", description="Literal replacement or inserted text, including any needed newlines.")
@@ -115,7 +116,7 @@ class BuildProposal(BaseModel):
     summary: str
     commit_message: str
     edits: list[FileEdit]
-    task_complete: bool = True
+    task_complete: bool = Field(default=True, strict=True)
     commands: list[list[str]] = Field(default_factory=list)
     flag_default: bool = False
 
@@ -237,6 +238,8 @@ class JobState(BaseModel):
     builder_calls: int = 0
     completed_builder_calls: int = 0
     auto_added_files: list[str] = Field(default_factory=list)
+    auto_added_file_tasks: dict[str, str] = Field(default_factory=dict)
+    task_file_calls: dict[str, dict[str, int]] = Field(default_factory=dict)
     deleted_files: list[str] = Field(default_factory=list)
     quick_verify_runs: dict[str, list[VerifyResult]] = Field(default_factory=dict)
     retries: dict[str, int] = Field(default_factory=dict)

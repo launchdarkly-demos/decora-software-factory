@@ -7,7 +7,7 @@ from typing import Literal, cast, get_args
 import yaml
 from pydantic import BaseModel, Field
 
-from factory.errors import FactoryError, GovernanceError
+from factory.errors import FactoryError, GovernanceError, SafetyError
 from factory.models import ChangeClass, ImplementationPlan, JobState
 
 
@@ -72,10 +72,13 @@ class VerificationProfile(BaseModel):
 class Policy(BaseModel):
     version: int = 1
     builder_max_turns: int = Field(default=40, gt=0)
-    builder_max_output_tokens: int = Field(default=6000, gt=0)
+    builder_max_output_tokens: int = Field(default=16000, gt=0)
     per_task_retries: int = Field(default=3, ge=0)
-    max_job_attempts: int = Field(default=25, gt=0)
-    split_attempts: int = Field(default=3, ge=0)
+    max_job_attempts: int = Field(default=30, gt=0)
+    split_attempts: int = Field(default=4, ge=0)
+    whole_file_limit: int = Field(default=64000, gt=0)
+    excerpt_budget: int = Field(default=160000, gt=0)
+    protected_paths: list[str] = Field(default_factory=list)
     max_retries: dict[str, int] = Field(
         default_factory=lambda: {"review": 1, "govern": 1, "plan": 2, "plan_repair": 2}
     )
@@ -103,7 +106,7 @@ class Policy(BaseModel):
     pull_request: PullRequestRules = Field(default_factory=PullRequestRules)
 
     def timeout_for(self, stage: str) -> float:
-        return float(self.stage_timeout_seconds.get(stage, 120))
+        return float(self.stage_timeout_seconds.get(stage, 600 if stage == "build" else 120))
 
     def check_command(self, argv: list[str]) -> None:
         if not argv:
@@ -126,10 +129,13 @@ class Policy(BaseModel):
     def check_path(self, rel: str) -> None:
         normalized = rel.replace("\\", "/").lstrip("/")
         if normalized == ".git" or normalized.startswith(".git/") or "/.git/" in f"/{normalized}":
-            raise GovernanceError(f"path denied: {rel}")
-        for pattern in self.deny_paths:
+            raise SafetyError(f"Safety violation: protected path on `{rel}`.")
+        if any(part.startswith(".env") or part in {"policy.yaml", "policy.decora.yaml"}
+               for part in Path(normalized).parts):
+            raise SafetyError(f"Safety violation: protected path on `{rel}`.")
+        for pattern in [*self.deny_paths, *self.protected_paths]:
             if _path_matches(pattern, normalized):
-                raise GovernanceError(f"path denied by policy: {rel}")
+                raise SafetyError(f"Safety violation: protected path on `{rel}`.")
 
 
 class Decision(BaseModel):

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 
-from factory.errors import GovernanceError
+from factory.errors import SafetyError
 
 _SECRET = re.compile(
     r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'
@@ -20,4 +20,4 @@ def check_content(content: str) -> None:
                    if any(marker in key.upper() for marker in ('TOKEN', 'SECRET', 'API_KEY', 'PASSWORD', 'SDK_KEY'))
                    and len(value) >= 8]
     if _SECRET.search(content) or any(value in content for value in credentials):
-        raise GovernanceError('Secret detected in Builder content; edit refused')
+        raise SafetyError('Secret detected in Builder content; edit refused')

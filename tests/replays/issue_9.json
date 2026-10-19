@@ -1,0 +1,77 @@
+{
+  "issue": 9,
+  "plan": {
+    "summary": "Implement conversion",
+    "change_class": "refactor",
+    "files": [
+      "server.py",
+      "tests/test_conversion.py"
+    ],
+    "steps": [
+      "Implement conversion and regression tests"
+    ],
+    "flag_key": null,
+    "flag_default": false,
+    "test_targets": [
+      "tests/test_conversion.py"
+    ],
+    "risk": "low",
+    "ambiguous": false,
+    "questions": [],
+    "recipe": "general",
+    "tasks": [
+      {
+        "id": "T1",
+        "description": "Implement conversion",
+        "files": [
+          "server.py",
+          "tests/test_conversion.py"
+        ],
+        "depends_on": [],
+        "acceptance": [
+          "Conversion preserves input and is repeatable"
+        ]
+      }
+    ]
+  },
+  "calls": [
+    {
+      "task": "T1",
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "server.py",
+            "kind": "write",
+            "content": "def conversion(value):\n    return value\n"
+          }
+        ],
+        "task_complete": true
+      }
+    },
+    {
+      "task": "T1",
+      "feedback": [
+        "Create `tests/test_conversion.py` covering:",
+        "Conversion preserves input"
+      ],
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "tests/test_conversion.py",
+            "kind": "write",
+            "content": "from server import conversion\n\ndef test_conversion():\n    assert conversion(8) == 8\n"
+          }
+        ],
+        "task_complete": true
+      }
+    }
+  ],
+  "expected_auto_added": [],
+  "expected_retries": {
+    "T1": 1
+  }
+}

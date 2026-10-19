@@ -8,7 +8,7 @@ submission; comments are not executed. GitHub authentication comes from `gh`.
 
 Install `.github/ISSUE_TEMPLATE/factory-task.md` from this repo in the target repo's
 default branch. The template deliberately does not apply a trigger label itself.
-Create a `factory:ready` label. A maintainer with write/admin access applies it after
+Create `factory:ready` and `factory:retry` labels. A maintainer with write/maintain/admin access applies it after
 reviewing the request. The bridge checks the most recent label event and the actor's
 current repository permission; triage/read access alone does not authorize execution.
 The worker refuses issue requests whose GitHub repository differs from its origin.
@@ -64,8 +64,18 @@ Temporal address/namespace options as the other commands.
 
 Removing the label or closing the issue stops new intake but **does not cancel a job
 already accepted**. The bridge continues reporting accepted jobs. Editing or relabeling
-the issue does not rerun it. To request a deliberate retry, create a new issue linking
-the old one. Do not delete bridge state: Temporal prevents duplicate IDs while its
+the issue does not rerun it. After its prior job is terminal, a maintainer with
+write, maintain or admin access can add `factory:retry` to the **original, open issue**.
+The latest event for that label must authorize execution. The bridge starts
+`job-gh-<GitHub issue ID>-r1`, then `-r2`, and so on, freezes the current issue text,
+records the job in `issues.json`, posts a new status comment for that job, and removes
+the retry label after the comment succeeds. Active jobs and closed issues cannot
+be retried. The original ready label need not remain present. Failed comment or
+label-removal requests are retried on later polls without starting another job.
+
+Use `--retry-label <name>` to override `factory:retry` (and `--label <name>` for
+`factory:ready`); these labels must differ. Create the configured labels in GitHub.
+Never edit the ledger by hand or delete bridge state: Temporal prevents duplicate IDs while its
 history is retained, and the bridge ledger remembers completed issues beyond that.
 
 If the bridge or GitHub is unavailable, execution continues in Temporal. Restart the
@@ -78,7 +88,7 @@ multi-host distributed lock implementation.
 
 | Area | Current behavior | Remaining work |
 | --- | --- | --- |
-| Issue intake | Maintainer label, deduplicated Temporal submission, status/PR comment | GitHub-based clarification, explicit rerun/cancel controls, PR-review feedback loop |
+| Issue intake | Maintainer label, deduplicated Temporal submission, status/PR comment | GitHub-based clarification, cancel controls, PR-review feedback loop |
 | Planning | General SDK Planner with ordered tasks, dependencies, migration plans and read-only tools | Independently scheduled sub-jobs/PRs; broader end-to-end acceptance cases |
 | Context | Frontend/backend discovery and bounded file/search tools | Larger-repository scaling and richer semantic navigation |
 | Verification | Required profiles, selected pytest regressions, new Python lint and compile | Provision Decora browser/migration suites; required CI and broader coverage |
@@ -157,3 +167,9 @@ follow-up until browser and migration verification are configured.
 
 Generated PRs include rollout guidance and verification evidence. A human reviews,
 merges, and starts any required guarded rollout.
+
+
+Status-comment answer commands include the watcher's actual `--address` and include
+`--namespace` when it is not `default`. This keeps replies on the same Temporal
+server and namespace as the watcher, including when several local clones use
+different ports.

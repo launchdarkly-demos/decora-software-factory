@@ -1,0 +1,103 @@
+{
+  "issue": 19,
+  "plan": {
+    "summary": "Complete Home/Room models after checkpoint",
+    "change_class": "refactor",
+    "files": [
+      "app/project.py",
+      "app/store.py",
+      "tests/test_models.py"
+    ],
+    "steps": [
+      "Complete model_update"
+    ],
+    "test_targets": [
+      "tests/test_models.py"
+    ],
+    "risk": "low",
+    "recipe": "general",
+    "tasks": [
+      {
+        "id": "model_update",
+        "description": "Add Home and associate Room with Home; allow duplicate names",
+        "files": [
+          "app/project.py",
+          "app/store.py",
+          "tests/test_models.py"
+        ],
+        "acceptance": [
+          "Room names may repeat within homes; context keys stay stable"
+        ]
+      }
+    ],
+    "flag_key": null,
+    "flag_default": false,
+    "ambiguous": false,
+    "questions": []
+  },
+  "calls": [
+    {
+      "task": "model_update",
+      "proposal": {
+        "summary": "Home/Room model changes",
+        "commit_message": "Update models",
+        "edits": [
+          {
+            "path": "app/project.py",
+            "kind": "write",
+            "content": "from dataclasses import dataclass\n\n@dataclass\nclass Room:\n    key: str\n    name: str\n    home_id: str\n"
+          },
+          {
+            "path": "app/store.py",
+            "kind": "write",
+            "content": "ROOMS = []\n"
+          },
+          {
+            "path": "tests/test_models.py",
+            "kind": "write",
+            "content": "from app.project import Room\n"
+          }
+        ],
+        "task_complete": false
+      }
+    },
+    {
+      "task": "model_update",
+      "max_turns": true,
+      "feedback": [
+        "remaining work"
+      ]
+    },
+    {
+      "task": "model_update",
+      "feedback": [
+        "Split this task"
+      ],
+      "proposal": {
+        "summary": "Home/Room model changes",
+        "commit_message": "Update models",
+        "edits": [
+          {
+            "path": "app/project.py",
+            "kind": "insert_after",
+            "old": "    home_id: str\n",
+            "new": "\n\n@dataclass\nclass Home:\n    key: str\n    name: str\n"
+          },
+          {
+            "path": "app/store.py",
+            "kind": "append",
+            "new": "\n\ndef add_room(room):\n    ROOMS.append(room)\n"
+          },
+          {
+            "path": "tests/test_models.py",
+            "kind": "append",
+            "new": "\nfrom app.project import Home, Room\nfrom app.store import ROOMS, add_room\n\ndef test_duplicate_names_and_stable_context_keys():\n    home = Home(\"h1\", \"Home\")\n    first = Room(\"r1\", \"Bedroom\", home.key)\n    second = Room(\"r2\", \"Bedroom\", home.key)\n    add_room(first)\n    add_room(second)\n    assert first.name == second.name\n    assert first.key == \"r1\"\n    assert [room.home_id for room in ROOMS] == [home.key, home.key]\n"
+          }
+        ],
+        "task_complete": true
+      }
+    }
+  ],
+  "expected_retries": {},
+  "expected_auto_added": []
+}

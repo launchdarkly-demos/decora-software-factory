@@ -3,7 +3,7 @@ import json
 import pytest
 
 from factory.context.repo import RepositoryReader, analyze_repo
-from factory.errors import FactoryError, GovernanceError
+from factory.errors import GovernanceError
 from factory.governance.policy import VerificationProfile, review_plan
 from factory.models import BuildProposal, FileEdit, PlanTask, WorktreeInfo
 from factory.verification.profiles import prerequisites, task_problems
@@ -69,23 +69,20 @@ def test_migration_needs_plan_checks_and_human_approval(tmp_path):
     assert decision.pause and decision.resume_stage == 'build'
 
 
-def test_unlisted_file_or_existing_write_rejected_before_any_edit(tmp_path):
+def test_safe_unlisted_file_and_existing_write_are_applied(tmp_path):
     from factory.agents.apply import apply_proposal
     from factory.tools.layer import ToolLayer
     repo = init_repo(tmp_path / 'repo')
     tools = ToolLayer(repo, policy())
-    job = bare_job(tmp_path, plan=low_plan(files=['allowed.py', 'server.py']),
+    job = bare_job(tmp_path, plan=low_plan(files=['server.py']),
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=tools.head_sha()))
-    proposal = BuildProposal(summary='bad', commit_message='bad', edits=[
-        FileEdit(path='allowed.py', kind='write', content='ok'),
-        FileEdit(path='outside.py', kind='write', content='bad')])
-    with pytest.raises(GovernanceError, match='outside approved'):
-        apply_proposal(job, tools, proposal)
-    assert not (repo / 'allowed.py').exists()
-    proposal.edits[-1] = FileEdit(path='server.py', kind='write', content='overwrite')
-    with pytest.raises(FactoryError, match='Use replace'):
-        apply_proposal(job, tools, proposal)
-    assert not (repo / 'allowed.py').exists()
+    proposal = BuildProposal(summary='update', commit_message='update', edits=[
+        FileEdit(path='outside.py', kind='write', content='VALUE = 1\n'),
+        FileEdit(path='server.py', kind='write', content='VALUE = 2\n')])
+    apply_proposal(job, tools, proposal)
+    assert tools.read('server.py') == 'VALUE = 2\n'
+    assert job.auto_added_files == ['outside.py']
+    assert 'outside.py' in job.plan.files
 
 
 def test_preview_saves_plan_without_builder_or_target_edits(tmp_path):
@@ -165,7 +162,7 @@ def test_decora_profiles_fail_when_target_suites_are_missing(tmp_path):
     base = tools.head_sha()
     tools.write('web/studio.html', '<h1>Homes</h1>')
     tools.commit('Frontend change', ['web/studio.html'])
-    plan = low_plan(flag_key=None, test_targets=[], verification_profiles=['migration'])
+    plan = low_plan(files=['web/studio.html'], flag_key=None, test_targets=[], verification_profiles=['migration'])
     job = bare_job(tmp_path, plan=plan,
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha=base))
     result = VerificationGate(repo, tmp_path / 'home').run(job, tools)
@@ -180,13 +177,13 @@ def test_invalid_plan_repairs_automatically_then_preserves_risk_approval(tmp_pat
 
     repo = init_repo(tmp_path / 'repo')
     task = PlanTask(id='backend', description='Change backend', files=['server.py'], acceptance=['works'])
-    invalid = low_plan(files=[], tasks=[task], risk='high')
+    invalid = low_plan(files=['server.py'], tasks=[task.model_copy(update={'acceptance': []})], risk='high')
     valid = low_plan(files=['server.py'], tasks=[task], risk='high')
 
     class Planner(ScriptedHarness):
         def plan(self, job, context):
             if job.plan:
-                assert 'server.py' in job.govern_feedback
+                assert 'backend needs acceptance checks' in job.govern_feedback
             return super().plan(job, context)
 
     job = make_factory(tmp_path, repo, Planner([invalid, valid])).run(feature())
@@ -210,7 +207,7 @@ def test_plan_repair_exhaustion_pauses_with_actionable_details(tmp_path):
     assert 'web/styles.css' in job.question
 
 
-def test_plan_validation_reports_all_file_defects_together(tmp_path):
+def test_plan_validation_drops_stale_scope_and_reports_invalid_context(tmp_path):
     from factory.models import RepoContext
 
     plan = low_plan(files=[], context_files=['web/styles.css'], tasks=[
@@ -221,9 +218,13 @@ def test_plan_validation_reports_all_file_defects_together(tmp_path):
                    file_inventory=['server.py', 'web/site.css']))
     decision = review_plan(policy(), plan, job)
     assert decision.retry_plan
-    for path in ['server.py', 'web/site.css', 'web/styles.css']:
-        assert path in decision.reason
-    assert plan.files == []  # Validation must not silently expand approved scope.
+    assert 'web/styles.css' in decision.reason
+    notes = '\n'.join(plan.normalization_notes)
+    for path in ['server.py', 'web/site.css']:
+        assert path not in decision.reason
+        assert path in notes
+    assert all(set(task.files) <= set(plan.files) for task in plan.tasks)
+    assert plan.files == ['app/flags.py']  # Only the approved deterministic flag module is added.
 
 
 def test_missing_infrastructure_pauses_but_omitted_profile_selection_repairs(tmp_path):
@@ -237,3 +238,42 @@ def test_missing_infrastructure_pauses_but_omitted_profile_selection_repairs(tmp
     omitted = review_plan(rules, plan, job)
     assert omitted.retry_plan
     assert 'Select a configured migration profile' in omitted.reason
+
+
+@pytest.mark.parametrize('path', ['app/0001/convert.py', 'app/class/convert.py', 'app/my-package/convert.py'])
+def test_python_package_directories_need_valid_identifiers(path):
+    plan = low_plan(files=[path])
+    assert 'valid identifiers' in ' '.join(task_problems(plan))
+
+
+def test_repository_tools_read_outside_edit_scope_without_exposing_secrets(tmp_path, monkeypatch):
+    import asyncio
+
+    from agents.tool_context import ToolContext
+
+    from factory.harness.repository_tools import repository_tools
+
+    (tmp_path / 'lib').mkdir()
+    (tmp_path / 'lib/helpers.py').write_text('def helper():\n    return 42\n')
+    (tmp_path / '.env').write_text('PRIVATE=do not read')
+    (tmp_path / 'innocent.py').write_text('value = "embedded-private-test-key"\n')
+    (tmp_path / 'alias').symlink_to(tmp_path / 'lib')
+    monkeypatch.setenv('OPENAI_API_KEY', 'embedded-private-test-key')
+    observed = {}
+    tools = {tool.name: tool for tool in repository_tools(tmp_path, policy(), observed=observed)}
+
+    def invoke(name, **args):
+        payload = json.dumps(args)
+        ctx = ToolContext(context=None, tool_name=name, tool_call_id='read-test', tool_arguments=payload)
+        return asyncio.run(tools[name].on_invoke_tool(ctx, payload))
+
+    assert 'lib/helpers.py' in invoke('list_files', pattern='lib/*')
+    assert 'lib/helpers.py:1: def helper():' in invoke('search_code', text='helper')
+    assert invoke('read_file', path='lib/helpers.py') == 'def helper():\n    return 42\n'
+    assert observed['lib/helpers.py'] == ['def helper():\n    return 42\n']
+    for path in ['.env', 'innocent.py', 'alias/helpers.py']:
+        assert 'unavailable or denied' in invoke('read_file', path=path)
+        assert path not in observed
+    assert 'embedded-private-test-key' not in invoke('search_code', text='value')
+    context = analyze_repo(tmp_path, feature())
+    assert 'embedded-private-test-key' not in str(context.model_dump())

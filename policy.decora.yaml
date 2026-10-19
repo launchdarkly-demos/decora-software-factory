@@ -1,18 +1,24 @@
 # Explicit opt-in policy for real Decora draft PRs. Publishing still requires --push.
 version: 1
+builder_max_turns: 40
+builder_max_output_tokens: 16000
+verify_retries: 4
+per_task_retries: 4
+max_job_attempts: 40
+split_attempts: 4
+whole_file_limit: 64000
+excerpt_budget: 160000
 max_retries:
-  verify: 2
   review: 1
   govern: 1
   plan: 2
   plan_repair: 2
-  build: 3
 stage_timeout_seconds:
   intake: 30
   context: 60
   plan: 120
   govern_plan: 30
-  build: 180
+  build: 600
   verify: 600
   ensure_flag: 90
   review: 120
@@ -62,6 +68,9 @@ flags:
   enabled: true
   key_pattern: '^decora-[a-z0-9-]+$'
   must_default_off: true
+  # Canonical owner/repo#number (full issue URLs and numeric strings also supported).
+  issue_flag_keys:
+    "arober39/decor-agent#8": decora-room-home-migration
 
 rollout_rules:
   user_facing_behavior: {flag: required, guarded_rollout: required, human_pause: false}

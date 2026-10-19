@@ -1,0 +1,190 @@
+{
+  "change_class": "data_migration",
+  "guarded_rollout_metric": "decora-request-error",
+  "summary": "Safely introduce a Home entity and registry, add a home association for rooms, and implement an explicit, safe migration for legacy rooms using a default home. The LaunchDarkly feature flag (key: decora-room-home-migration) gates all migration code paths and is default-off. The MCP server is not altered; all compatibility for callers and resources is preserved. Full migration tests are provided, and compatibility under both flag states is ensured. Recovery, repeat-execution, and rollback are documented.",
+  "files": [
+    "app/home.py",
+    "app/__init__.py",
+    "docs/aaif-learning.md",
+    "app/project.py",
+    "app/store.py",
+    "app/migrations/migration_0001_room_home.py",
+    "tests/migrations/test_migration_0001_room_home.py",
+    "README.md",
+    "app/flags.py"
+  ],
+  "steps": [
+    "Introduce Home entity and registry.",
+    "Refactor project and room storage to associate rooms with homes, supporting legacy data for migration. Callers that previously omitted home_id (e.g., upsert_room) remain compatible by assigning the room to the default home instead of raising errors; legacy context keys and resource links remain unchanged.",
+    "Implement explicit migration script (migration_0001_room_home.py): on invocation, safely move all legacy rooms into the default home, preserving every detail, providing idempotence and recoverability, and ensuring no data loss or mixing. Migration never runs automatically.",
+    "Add and wire LaunchDarkly flag (key: decora-room-home-migration, default off, defined with FLAG_DEFAULT = False) for migration code path per policy, with rationale and usage documented in docs/aaif-learning.md. Evaluate with default=FLAG_DEFAULT.",
+    "Document explicit migration invocation, recovery, rollback, partial failure handling, and migration timing. Update docs/aaif-learning.md and README.md as needed. Migration is manual and requires human approval to run.",
+    "Implement comprehensive migration tests in tests/migrations, covering data preservation, repeated execution, partial failure, and legacy compatibility. Ensure test coverage includes running room operations and project/resource resolutions with and without the migration flag enabled."
+  ],
+  "flag_key": "decora-room-home-migration",
+  "flag_default": false,
+  "test_targets": [
+    "tests/migrations/test_migration_0001_room_home.py"
+  ],
+  "risk": "high",
+  "ambiguous": false,
+  "questions": [],
+  "recipe": "general",
+  "context_files": [
+    "README.md",
+    "app/store.py",
+    "app/project.py",
+    "test_mcp_project.py",
+    "test_store.py",
+    "app/__init__.py",
+    "docs/aaif-learning.md",
+    "app/flags.py"
+  ],
+  "tasks": [
+    {
+      "id": "create_home_entity_and_registry",
+      "description": "Introduce an explicit Home entity and registry, allowing enumeration and storage of homes. This provides the basis for associating rooms to homes.",
+      "files": [
+        "app/home.py",
+        "app/__init__.py",
+        "docs/aaif-learning.md"
+      ],
+      "quick_test_targets": [],
+      "depends_on": [],
+      "acceptance": [
+        "A Home entity exists and can be instantiated/named explicitly.",
+        "A registry for homes can add/list/retrieve homes by ID.",
+        "No API or Studio changes; only code and doc foundation provided."
+      ]
+    },
+    {
+      "id": "refactor_project_and_room_storage",
+      "description": "Refactor room/project storage logic so each room is associated with a home. Store/Project allow per-home room enumeration. Ensure all context keys, IDs, legacy loading logic remain stable and support migration. Callers that omit home_id (e.g., upsert_room) are routed to the default home and never raise. MCP and API behavior is unchanged.",
+      "files": [
+        "app/store.py",
+        "app/project.py",
+        "app/home.py",
+        "app/migrations/migration_0001_room_home.py",
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "quick_test_targets": [],
+      "depends_on": [
+        "create_home_entity_and_registry"
+      ],
+      "acceptance": [
+        "In-memory and persistent project and room logic store home-room association.",
+        "Compatibility with legacy room data is maintained for migration.",
+        "Home IDs and room context keys remain stable.",
+        "Callers that omit home_id default to the default home (do not break).",
+        "No MCP server or resource changes occur in this slice."
+      ]
+    },
+    {
+      "id": "implement_migration_script",
+      "description": "Create explicit migration (migration_0001_room_home.py) that safely moves all legacy rooms into a named Default Home, preserves all detail/spec/navigation/context_keys, and supports idempotence and recovery. Never runs automatically; only on manual invocation.",
+      "files": [
+        "app/migrations/migration_0001_room_home.py",
+        "app/home.py",
+        "app/project.py",
+        "app/store.py"
+      ],
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "refactor_project_and_room_storage"
+      ],
+      "acceptance": [
+        "Migration script performs idempotent promotion of rooms to the default home.",
+        "No room data, brief, style, chat, board selection, cart, or links are lost or mixed across rooms.",
+        "Repeated runs do not double-migrate; partial-failure leaves original rooms recoverable.",
+        "Room context keys and MCP/project links are preserved.",
+        "Migration is never run automatically."
+      ]
+    },
+    {
+      "id": "add_feature_flag_for_migration",
+      "description": "Add a LaunchDarkly feature flag (key: decora-room-home-migration, default off) gating the migration code path, per policy. In app/flags.py, define the key and FLAG_DEFAULT = False, and evaluate with default=FLAG_DEFAULT. Update docs with rationale and usage.",
+      "files": [
+        "app/flags.py",
+        "app/migrations/migration_0001_room_home.py",
+        "docs/aaif-learning.md",
+        "app/home.py"
+      ],
+      "quick_test_targets": [],
+      "depends_on": [
+        "implement_migration_script"
+      ],
+      "acceptance": [
+        "A default-off flag 'decora-room-home-migration' is defined as a constant and used to gate migration logic.",
+        "All policy requirements for flags (default off, key pattern, rationale) are satisfied.",
+        "Documentation explains rollout, migration timing, and human gating.",
+        "All migration entrypoints use the flag with correct evaluation pattern."
+      ]
+    },
+    {
+      "id": "document_and_expose_migration_invocation",
+      "description": "Provide a documented, explicit invocation path to run the migration, describe timing, data recovery, error/rollback handling in aaif-learning.md, and ensure the workflow is not automatic. Update README.md if needed to document process and required approval. No MCP or API changes.",
+      "files": [
+        "app/migrations/migration_0001_room_home.py",
+        "docs/aaif-learning.md",
+        "README.md"
+      ],
+      "quick_test_targets": [],
+      "depends_on": [
+        "add_feature_flag_for_migration"
+      ],
+      "acceptance": [
+        "Migration can be invoked directly and is never automatic.",
+        "Documentation describes repeat execution, data recovery, rollback and recovery steps for partial failures.",
+        "No automatic approval, spending, or data deletion ever occurs.",
+        "README and docs outline how/when humans run the migration."
+      ]
+    },
+    {
+      "id": "implement_migration_and_compatibility_tests",
+      "description": "Add migration tests in tests/migrations with legacy fixtures covering: data preservation, re-runs (idempotence), partial failure and recovery, and legacy room compatibility. Tests must cover both flag states and confirm all room/project operations function with/without migration enabled.",
+      "files": [
+        "tests/migrations/test_migration_0001_room_home.py",
+        "app/migrations/migration_0001_room_home.py",
+        "app/store.py"
+      ],
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "document_and_expose_migration_invocation"
+      ],
+      "acceptance": [
+        "Round-trip and repeat-execution verified in tests.",
+        "Partial failure simulated and data successfully recovered or left restorable.",
+        "Legacy rooms migrated with all attributes/links untouched.",
+        "All acceptance scenarios are tested under the 'migration' profile and both flag-off and flag-on states."
+      ]
+    }
+  ],
+  "verification_profiles": [
+    "migration"
+  ],
+  "large_change": true,
+  "important_ux_change": false,
+  "flag_rationale": "This is a high-risk data migration affecting core persisted structures; by policy, all such changes require a LaunchDarkly feature flag with a named key (decora-room-home-migration) and default=off, defined next to the key as FLAG_DEFAULT = False. Flag gating limits exposure and mitigates regressions by ensuring compatibility and reversibility before rollout. The flag must be evaluated in all migration entrypoints and controlled through human review only. Rollout or enablement remains manual.",
+  "requires_migration": true,
+  "migration_plan": "1. Migration script discovers all legacy rooms not associated with a home and moves them to a clearly named default home (e.g., 'Default Home').\n2. All room data and links (briefs, boards, product selections, styles, chat, cart, approval state) are copied without loss or mixing. MCP/project context keys remain stable.\n3. The migration is idempotent: repeated invocations result in no further changes.\n4. On failure or partial application, original data is preserved and recoverable. Documentation describes manual recovery and rollback via explicit invocation—never automatic.\n5. Rollback is manual (restore from pre-migration backup if needed).\n6. Migration tests run in temporary storage, verifying multi-run, interruption handling, and both flag-off and flag-on behavior.",
+  "risks": [
+    "Migration may break room/project compatibility, context keys, or links if not correctly handled.",
+    "Partial failures must be recoverable without data loss.",
+    "Room-to-home mapping must be validated to prevent corrupting system state.",
+    "If migration is mistakenly run automatically, unintended data transition could occur—flag gating mitigates this.",
+    "Failure to strictly follow the flagging policy would block rollout and increase risk of regression."
+  ],
+  "assumptions": [
+    "No user-facing API, Studio, or MCP resource behavior is altered in this slice.",
+    "Schema supports room-to-home migration and storage; destructive schema changes are not required.",
+    "All legacy room data is serializable and supports migration.",
+    "No automatic approval or spending takes place.",
+    "Migration and rollback are manual, requiring a human to trigger and approve.",
+    "Flag key is exactly decora-room-home-migration with FLAG_DEFAULT = False, defined and evaluated as in app/flags.py.",
+    "Existing callers (e.g., upsert_room) remain compatible and never error when not given a home_id."
+  ]
+}

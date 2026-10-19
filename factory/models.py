@@ -3,7 +3,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+from factory.command_output import strip_ansi
 
 
 class Stage(str, Enum):
@@ -72,11 +74,16 @@ class PlanTask(BaseModel):
     id: str
     description: str
     files: list[str]
+    rewrite_files: list[str] = Field(default_factory=list)
+    max_test_functions: int = Field(default=6, ge=1)
+    quick_test_targets: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     acceptance: list[str] = Field(default_factory=list)
 
 
 class ImplementationPlan(BaseModel):
+    flag_task_id: str | None = None
+    normalization_notes: list[str] = Field(default_factory=list)
     change_class: ChangeClass | None = None
     guarded_rollout_metric: str | None = None
     summary: str
@@ -103,21 +110,28 @@ class ImplementationPlan(BaseModel):
 
 class FileEdit(BaseModel):
     path: str
-    kind: Literal["write", "replace"]
-    content: str = ""
-    old: str = ""
-    new: str = ""
+    kind: Literal["create", "write", "replace", "insert_after", "insert_before", "append", "prepend", "delete", "move"]
+    destination: str = Field(default="", validation_alias=AliasChoices("destination", "new_path"),
+                             description="For move: new repository-relative path; must not exist.")
+    content: str = Field(default="", description="For write: complete file contents.")
+    old: str = Field(default="", description="Unique non-empty verbatim anchor for replace/insert_after/insert_before.")
+    new: str = Field(default="", description="Literal replacement or inserted text, including any needed newlines.")
 
 
 class BuildProposal(BaseModel):
     summary: str
     commit_message: str
     edits: list[FileEdit]
+    task_complete: bool = Field(default=True, strict=True)
     commands: list[list[str]] = Field(default_factory=list)
     flag_default: bool = False
 
 
 class BuildResult(BaseModel):
+    quick_test_commands: list[list[str]] = Field(default_factory=list)
+    anchor_fallbacks: list[str] = Field(default_factory=list)
+    task_complete: bool = True
+    correction: str | None = None
     commit: str
     changed_files: list[str]
     summary: str
@@ -126,6 +140,8 @@ class BuildResult(BaseModel):
 
 
 class CommandReport(BaseModel):
+    _plain_output = field_validator("output")(strip_ansi)
+
     argv: list[str]
     exit_code: int
     output: str
@@ -133,6 +149,8 @@ class CommandReport(BaseModel):
 
 
 class VerifyResult(BaseModel):
+    _plain_actionable = field_validator("actionable")(strip_ansi)
+
     passed: bool
     commands: list[CommandReport]
     actionable: str
@@ -209,6 +227,7 @@ class JobEvent(BaseModel):
 
 
 class JobState(BaseModel):
+    fixed_flag_key: str | None = None
     id: str
     stage: Stage
     feature: FeatureRequest
@@ -223,6 +242,25 @@ class JobState(BaseModel):
     question: str | None = None
     human_answers: list[str] = Field(default_factory=list)
     resume_stage: Stage | None = None
+    current_task_id: str | None = None
+    completed_task_ids: list[str] = Field(default_factory=list)
+    checkpoint_shas: dict[str, list[str]] = Field(default_factory=dict)
+    task_summaries: dict[str, str] = Field(default_factory=dict)
+    task_retries: dict[str, int] = Field(default_factory=dict)
+    failure_test_ids: dict[str, list[str]] = Field(default_factory=dict)
+    failure_test_counts: dict[str, int] = Field(default_factory=dict)
+    progress_retry_streaks: dict[str, int] = Field(default_factory=dict)
+    verify_retries_used: int = 0
+    verification_task_routes: dict[str, int] = Field(default_factory=dict)
+    task_original_files: dict[str, list[str]] = Field(default_factory=dict)
+    task_split_attempts: dict[str, int] = Field(default_factory=dict)
+    builder_calls: int = 0
+    completed_builder_calls: int = 0
+    auto_added_files: list[str] = Field(default_factory=list)
+    auto_added_file_tasks: dict[str, str] = Field(default_factory=dict)
+    task_file_calls: dict[str, dict[str, int]] = Field(default_factory=dict)
+    deleted_files: list[str] = Field(default_factory=list)
+    quick_verify_runs: dict[str, list[VerifyResult]] = Field(default_factory=dict)
     retries: dict[str, int] = Field(default_factory=dict)
     usage: Usage = Field(default_factory=Usage)
     worktree: WorktreeInfo | None = None

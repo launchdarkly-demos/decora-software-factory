@@ -1,0 +1,202 @@
+{
+  "issue": 16,
+  "plan": {
+    "summary": "Implement conversion",
+    "change_class": "refactor",
+    "files": [
+      "app/part_1.py",
+      "app/part_2.py",
+      "app/part_3.py",
+      "app/part_4.py",
+      "app/part_5.py",
+      "tests/test_conversion.py"
+    ],
+    "steps": [
+      "Implement conversion and regression tests"
+    ],
+    "flag_key": null,
+    "flag_default": false,
+    "test_targets": [
+      "tests/test_conversion.py"
+    ],
+    "risk": "low",
+    "ambiguous": false,
+    "questions": [],
+    "recipe": "general",
+    "tasks": [
+      {
+        "id": "T1",
+        "description": "Implement conversion",
+        "files": [
+          "app/part_1.py"
+        ],
+        "depends_on": [],
+        "acceptance": [
+          "Conversion preserves input and is repeatable"
+        ]
+      },
+      {
+        "id": "T2",
+        "description": "Implement conversion",
+        "files": [
+          "app/part_2.py"
+        ],
+        "depends_on": [
+          "T1"
+        ],
+        "acceptance": [
+          "Conversion preserves input and is repeatable"
+        ]
+      },
+      {
+        "id": "T3",
+        "description": "Implement conversion",
+        "files": [
+          "app/part_3.py"
+        ],
+        "depends_on": [
+          "T2"
+        ],
+        "acceptance": [
+          "Conversion preserves input and is repeatable"
+        ]
+      },
+      {
+        "id": "T4",
+        "description": "Implement conversion",
+        "files": [
+          "app/part_4.py"
+        ],
+        "depends_on": [
+          "T3"
+        ],
+        "acceptance": [
+          "Conversion preserves input and is repeatable"
+        ]
+      },
+      {
+        "id": "T5",
+        "description": "Implement conversion",
+        "files": [
+          "app/part_5.py",
+          "tests/test_conversion.py"
+        ],
+        "depends_on": [
+          "T4"
+        ],
+        "acceptance": [
+          "Conversion preserves input and is repeatable"
+        ]
+      }
+    ]
+  },
+  "calls": [
+    {
+      "task": "T1",
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "app/part_1.py",
+            "kind": "write",
+            "content": "VALUE = 1\n"
+          }
+        ],
+        "task_complete": true
+      }
+    },
+    {
+      "task": "T2",
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "app/part_2.py",
+            "kind": "write",
+            "content": "VALUE = 2\n"
+          }
+        ],
+        "task_complete": true
+      }
+    },
+    {
+      "task": "T3",
+      "cutoff": true
+    },
+    {
+      "task": "T3",
+      "feedback": [
+        "split"
+      ],
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "app/part_3.py",
+            "kind": "write",
+            "content": "VALUE = 0\n"
+          }
+        ],
+        "task_complete": false
+      }
+    },
+    {
+      "task": "T3",
+      "feedback": [
+        "remaining work"
+      ],
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "app/part_3.py",
+            "kind": "write",
+            "content": "VALUE = 3\n"
+          }
+        ],
+        "task_complete": true
+      }
+    },
+    {
+      "task": "T4",
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "app/part_4.py",
+            "kind": "write",
+            "content": "VALUE = 4\n"
+          }
+        ],
+        "task_complete": true
+      }
+    },
+    {
+      "task": "T5",
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "app/part_5.py",
+            "kind": "write",
+            "content": "VALUE = 5\n"
+          },
+          {
+            "path": "tests/test_conversion.py",
+            "kind": "write",
+            "content": "from app.part_1 import VALUE as value_1\nfrom app.part_2 import VALUE as value_2\nfrom app.part_3 import VALUE as value_3\nfrom app.part_4 import VALUE as value_4\nfrom app.part_5 import VALUE as value_5\n\ndef test_conversion():\n    assert [value_1, value_2, value_3, value_4, value_5] == [1, 2, 3, 4, 5]\n"
+          }
+        ],
+        "task_complete": true
+      }
+    }
+  ],
+  "expected_auto_added": [],
+  "expected_retries": {}
+}

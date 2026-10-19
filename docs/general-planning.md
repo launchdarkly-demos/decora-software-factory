@@ -30,12 +30,16 @@ Missing verification profiles cause a planning pause rather than silently skippe
 Discovery includes JS/TS/JSX/TSX, HTML, CSS, Vue/Svelte, SQL, Python, manifests and docs,
 including `web/`. Relevant sections are chosen using the request rather than fixed
 room-mood anchors. Models can inspect up to 30 read-only tool calls / 100,000 returned
-characters per specialist run, bounded further by 20 SDK turns. Symlinks, traversal,
+characters per specialist run. Planner/reviewer calls allow 20 SDK turns; Builder
+calls use `builder_max_turns` (default 40). Symlinks, traversal,
 secret/config directories, `.env*`, credentials, generated/dependency trees, and the
 PIM catalog are excluded. Maintainer deny-path policy also applies.
 
-Builder edits must belong to `plan.files`. Existing files require replace edits;
-write edits cannot overwrite them. These checks are not an OS sandbox: generated
+Builder edits focus on the current task. Safe in-repo extra files (including package
+`__init__.py`) are added to the plan automatically and listed separately in the draft PR.
+Existing files accept focused replacements, anchored insertions, append/prepend, or path-checked whole-file writes.
+Files can also be deleted or moved to a safe new destination.
+These checks are not an OS sandbox: generated
 tests and configured commands still execute on the worker host.
 
 ## Configure verification once per target stack
@@ -156,23 +160,19 @@ one reply requesting replanning with the automatic validator; subsequent structu
 corrections happen internally. Use its current pause ID and do not approve a build
 until it reaches the separate risk-approval pause.
 
-## Builder source grounding
+## Builder
 
-Builder context contains exact contiguous source prefixes. Truncation instructions
-are separate metadata rather than synthetic code lines. For replacements outside
-that prefix, the Builder must read the relevant range through `read_file` during
-that attempt. Anchors absent from supplied/read source are rejected with corrective
-feedback. Each retry rebuilds the source payload from the current checkout.
+The approved [Builder spec](builder-spec.md) is the source of truth for Builder
+inputs, edits, safety checks, correction and split handling, budgets, checkpoints,
+verification, watcher retries, and acceptance replays. See the
+[traceability audit](builder-spec-traceability.md) for implementation and coverage.
 
-The edit applier rejects preview markers, empty proposals, out-of-plan files and
-whole-file writes over existing files. It simulates the entire sequence of edits
-before writing any file, so a bad later anchor does not leave earlier edits applied.
-This preflight protects against validation failures; it is not a filesystem transaction
-for disk errors or a rollback of commands run after successful edits.
+## Editing toolkit audit (#18 / #19)
 
-After applying a proposal, the factory formats its edited Python files with the
-worker's Ruff formatter before running proposal commands and committing. Formatting
-uses isolated defaults and stays inside the approved edit scope. This prevents
-fixable layout errors from consuming model repair attempts. Formatting failures
-block the build; the normal lint and behavioral verification gates still run,
-since formatting alone cannot fix every lint error or establish correctness.
+Added anchor-free and anchored additions, file deletion, and file moves. Existing
+whole-file writes cover file copying after a safe read; empty replacement text
+already supports deleting a unique block. Ordered edits support several changes to
+one file in a single proposal. There is no need to spend tool turns reading files
+already included in the payload. No arbitrary shell or unrestricted filesystem
+access is exposed to the Builder. Binary editing and standalone permission changes
+remain outside this text-edit toolkit.

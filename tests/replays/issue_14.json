@@ -1,0 +1,68 @@
+{
+  "issue": 14,
+  "plan": {
+    "summary": "Implement conversion",
+    "change_class": "refactor",
+    "files": [
+      "app/migrations/convert.py",
+      "tests/migrations/test_conversion.py"
+    ],
+    "steps": [
+      "Implement conversion and regression tests"
+    ],
+    "flag_key": null,
+    "flag_default": false,
+    "test_targets": [
+      "tests/migrations/test_conversion.py"
+    ],
+    "risk": "low",
+    "ambiguous": false,
+    "questions": [],
+    "recipe": "general",
+    "tasks": [
+      {
+        "id": "T1",
+        "description": "Implement conversion",
+        "files": [
+          "app/migrations/convert.py",
+          "tests/migrations/test_conversion.py"
+        ],
+        "depends_on": [],
+        "acceptance": [
+          "Conversion preserves input and is repeatable"
+        ]
+      }
+    ]
+  },
+  "calls": [
+    {
+      "task": "T1",
+      "proposal": {
+        "summary": "Implement conversion",
+        "commit_message": "Implement conversion",
+        "edits": [
+          {
+            "path": "app/migrations/convert.py",
+            "kind": "write",
+            "content": "def conversion(value):\n    return dict(value)\n"
+          },
+          {
+            "path": "tests/migrations/test_conversion.py",
+            "kind": "write",
+            "content": "from app.migrations.convert import conversion\n\ndef test_conversion():\n    original = {\"legacy\": 14}\n    assert conversion(original) == original\n    assert conversion(conversion(original)) == original\n"
+          },
+          {
+            "path": "app/migrations/__init__.py",
+            "kind": "write",
+            "content": ""
+          }
+        ],
+        "task_complete": true
+      }
+    }
+  ],
+  "expected_auto_added": [
+    "app/migrations/__init__.py"
+  ],
+  "expected_retries": {}
+}

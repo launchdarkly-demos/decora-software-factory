@@ -5,7 +5,9 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from factory.command_output import strip_ansi
 from factory.errors import GovernanceError
+from factory.gitcmd import git_env
 from factory.governance.policy import Policy, guarded_rollout_required, selected_flag_key
 from factory.models import JobState, PullRequestDraft
 
@@ -63,12 +65,12 @@ class Publisher:
 
     def _run(self, job: JobState, argv: list[str]) -> str:
         assert job.worktree is not None
-        result = self.runner(argv, cwd=job.worktree.path, check=False, capture_output=True, text=True)
+        result = self.runner(argv, cwd=job.worktree.path, check=False, capture_output=True, text=True, env=git_env())
         if result.returncode:
             # A transport failure can occur after a successful side effect. Let
             # Temporal retry and reconcile; never include provider output/secrets.
             raise PublicationError(f"Publication command failed: {argv[0]}")
-        return result.stdout or ""
+        return strip_ansi(result.stdout or "")
 
     def _existing(self, job: JobState, repo: str) -> str | None:
         assert job.worktree is not None
@@ -146,13 +148,22 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
             lines.extend(["", "Planned tasks:"])
             for task in plan.tasks:
                 lines.append(f"- {task.id}: {task.description} (depends on: {', '.join(task.depends_on) or 'none'})")
-        if plan.requires_migration:
-            lines.extend(["", "Migration and recovery:", "", plan.migration_plan])
+        if plan.normalization_notes:
+            lines.extend(["", "Plan normalization:", *[f"- {note}" for note in plan.normalization_notes]])
         if plan.context_files:
             lines.append("")
             lines.append("Context files the planner saw:")
             for path in plan.context_files:
                 lines.append(f"- `{path}`")
+        if plan.requires_migration:
+            lines.extend(["", "## Migration and recovery", "", plan.migration_plan])
+    lines.extend(["", "## Files added to the plan automatically", ""])
+    for path in job.auto_added_files:
+        task_id = job.auto_added_file_tasks.get(path) or next(
+            (task.id for task in plan.tasks if path in task.files), "unknown") if plan else "unknown"
+        lines.append(f"- `{path}` (task {task_id})")
+    if not job.auto_added_files:
+        lines.append("None.")
     lines.extend(["", "## Test evidence", ""])
     if not job.verify_runs:
         lines.append("No verification run was recorded.")
@@ -164,6 +175,12 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
         lines.append(result.actionable[-2500:])
         lines.append("```")
         lines.append("")
+    for task_id, attempts in job.quick_verify_runs.items():
+        for index, result in enumerate(attempts, 1):
+            state = "passed" if result.passed else "failed"
+            advisory = " (advisory after retries exhausted)" if not result.passed and index == len(attempts) else ""
+            lines.extend([f"### Task {task_id} quick test {index}: {state}{advisory}", "", "```text",
+                          result.actionable, "```", ""])
     lines.extend(["## Review findings", ""])
     if review is None:
         lines.append("No review was recorded.")
@@ -180,15 +197,19 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
     for risk in risks:
         lines.append(f"- {risk}")
     lines.extend(["", "## Retries", ""])
-    if job.retries:
-        for name, count in sorted(job.retries.items()):
-            lines.append(f"- {name}: {count}")
-    else:
-        lines.append("- none")
+    lines.append(f"- Builder calls: {job.builder_calls}")
+    lines.append(f"- Full-verification retries: {job.verify_retries_used}")
+    for task_id, count in sorted(job.verification_task_routes.items()):
+        lines.append(f"- Task {task_id} verification routes: {count}")
+    for task in plan.tasks if plan else []:
+        lines.append(f"- Task {task.id} corrections: {job.task_retries.get(task.id, 0)}")
+        lines.append(f"- Task {task.id} split continuations: {job.task_split_attempts.get(task.id, 0)}")
+    for name, count in sorted(job.retries.items()):
+        lines.append(f"- {name}: {count}")
     lines.extend(
         [
             "",
-            "## Diff",
+            "## Diff summary",
             "",
             "The patch is saved next to this file as `diff.patch`.",
             f"Diff bytes: {len(diff.encode())}.",

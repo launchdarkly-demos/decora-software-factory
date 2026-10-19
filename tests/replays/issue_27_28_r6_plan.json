@@ -1,0 +1,214 @@
+{
+  "change_class": "data_migration",
+  "guarded_rollout_metric": "decora-request-error",
+  "summary": "Associate rooms with homes using a Home registry, and implement an explicit, flag-gated migration for all legacy rooms into a default home. No HTTP API or Studio UI work. Migration is idempotent, preserves all per-room state (including context keys, briefs, styles, carts, boards, budgets, approvals), and is gated by the required feature flag `decora-room-home-migration`. Implements comprehensive migration tests for legacy compatibility, repeatability, recoverability, and documentation.",
+  "files": [
+    "app/project.py",
+    "app/store.py",
+    "app/home.py",
+    "app/migrations/migration_0001_room_home.py",
+    "tests/migrations/test_migration_0001_room_home.py",
+    "app/__init__.py",
+    "app/flags.py"
+  ],
+  "steps": [
+    "Inspect room and project structures in app/project.py and storage logic in app/store.py.",
+    "Introduce a Home class and home registry in app/home.py. Update room model in app/project.py to include a home_id field. Update __init__.py for app and the new package if created.",
+    "Update app/store.py to operate with home_id: support room lookup/creation/operations by home_id, without breaking previous context-key compatibility or legacy lookup; fallback to default home as needed.",
+    "In app/flags.py, implement ROOM_HOME_MIGRATION_FLAG = 'decora-room-home-migration' and FLAG_DEFAULT = False. Gate running the migration in app/migrations/migration_0001_room_home.py with get_flag(ROOM_HOME_MIGRATION_FLAG, context, default=FLAG_DEFAULT). Existing room operations (such as upsert_room without home_id) must keep working with the flag on or off, using the default home and never raising.",
+    "Implement migration_0001_room_home.py to associate all legacy rooms to a new default home with clearly named label and stable ID, preserving all per-room/project data. Ensure migration is idempotent and compatible with repeated/partial runs. Documentation must cover migration timing, partial failure, rerun/rollback procedures, MCP project/context key compatibility, and limitations for human review before build.",
+    "Implement and append migration tests in tests/migrations/test_migration_0001_room_home.py covering: legacy fixtures (rooms and projects before migration), all expected data preservation, repeated execution, partial failure/recovery, and existing room/project functionality compatibility before/after migration."
+  ],
+  "flag_key": "decora-room-home-migration",
+  "flag_default": false,
+  "test_targets": [
+    "tests/migrations/test_migration_0001_room_home.py"
+  ],
+  "risk": "high",
+  "ambiguous": false,
+  "questions": [],
+  "recipe": "general",
+  "context_files": [
+    "app/project.py",
+    "app/store.py",
+    "app/flags.py"
+  ],
+  "tasks": [
+    {
+      "id": "introduce_home_and_update_room_model",
+      "description": "Introduce Home class and a home registry in app/home.py. Update room model in app/project.py to include a home_id field. Update __init__.py for app and new package if created.",
+      "files": [
+        "app/home.py",
+        "app/project.py",
+        "app/__init__.py",
+        "app/store.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "test_store.py::test_add_room"
+      ],
+      "depends_on": [],
+      "acceptance": [
+        "Every room object has a home_id property.",
+        "Room creation allows/assigns an explicit home_id.",
+        "Home IDs are stable, opaque (not by name), and duplicate room names are allowed across homes."
+      ]
+    },
+    {
+      "id": "update_store_for_home_support",
+      "description": "Update app/store.py to operate with home_id: support room lookup and operations by home_id without breaking previous context-key compatibility. Ensure all APIs are stable and fallback supports legacy handling.",
+      "files": [
+        "app/store.py",
+        "app/__init__.py",
+        "app/home.py",
+        "app/project.py",
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "test_store.py"
+      ],
+      "depends_on": [
+        "introduce_home_and_update_room_model"
+      ],
+      "acceptance": [
+        "Room lookup and creation by home_id are supported.",
+        "Legacy context_key/project-key compatibility is preserved.",
+        "Existing API surface remains unchanged before migration."
+      ]
+    },
+    {
+      "id": "provision_mandatory_flag_and_gate_migration",
+      "description": "In app/flags.py, define ROOM_HOME_MIGRATION_FLAG = 'decora-room-home-migration' and FLAG_DEFAULT = False. In app/migrations/migration_0001_room_home.py, gate running the migration on get_flag(ROOM_HOME_MIGRATION_FLAG, context, default=FLAG_DEFAULT). Ensure all migration logic is only invoked if the flag is on. All room operations (upsert_room, lookup) must continue to function with the flag on or off, using the default home and never raising or breaking legacy compatibility. Do not modify mcp_servers/.",
+      "files": [
+        "app/flags.py",
+        "app/migrations/migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [],
+      "depends_on": [
+        "update_store_for_home_support"
+      ],
+      "acceptance": [
+        "ROOM_HOME_MIGRATION_FLAG and FLAG_DEFAULT are defined and used to gate all migration code.",
+        "Migration runs only with the flag on.",
+        "Room/store operations are fully functional whether the flag is off (legacy) or on (home association), always using the default home if home_id is missing."
+      ]
+    },
+    {
+      "id": "implement_migration_to_default_home",
+      "description": "Implement a data migration in app/migrations/migration_0001_room_home.py that iterates all legacy rooms, creating a default home, and assigns all legacy rooms to this home. Migration must be idempotent, preserve all room/project data, and not alter context/project keys. Include comprehensive docstring covering migration timing, recovery, rerun, rollback, and MCP context key compatibility for human review.",
+      "files": [
+        "app/migrations/migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [],
+      "depends_on": [
+        "provision_mandatory_flag_and_gate_migration"
+      ],
+      "acceptance": [
+        "All legacy rooms are associated to a new default home with a clearly named label and stable home_id.",
+        "Migration script is idempotent and safe on repeated runs.",
+        "All per-room data, context keys, briefs, styles, chat, boards, cart, budgets, and approval states are preserved.",
+        "MCP project links/context keys are unchanged.",
+        "Explicit documentation of migration timing, partial failures, rerun, and rollback is present."
+      ]
+    },
+    {
+      "id": "test_migration_and_legacy_compatibility_part_4",
+      "description": "Create or append at most six test functions for this behavior area: Migration correctly associates all legacy rooms to a default home.",
+      "files": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "implement_migration_to_default_home"
+      ],
+      "acceptance": [
+        "Migration correctly associates all legacy rooms to a default home."
+      ]
+    },
+    {
+      "id": "test_migration_and_legacy_compatibility_part_5",
+      "description": "Create or append at most six test functions for this behavior area: All data is preserved.",
+      "files": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "test_migration_and_legacy_compatibility_part_4"
+      ],
+      "acceptance": [
+        "All data is preserved."
+      ]
+    },
+    {
+      "id": "test_migration_and_legacy_compatibility_part_6",
+      "description": "Create or append at most six test functions for this behavior area: Tests cover repeat execution, partial failure handling, and legacy compatibility.",
+      "files": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "test_migration_and_legacy_compatibility_part_5"
+      ],
+      "acceptance": [
+        "Tests cover repeat execution, partial failure handling, and legacy compatibility."
+      ]
+    },
+    {
+      "id": "test_migration_and_legacy_compatibility_part_7",
+      "description": "Create or append at most six test functions for this behavior area: Existing room/project functionality works before and after migration.",
+      "files": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "test_migration_and_legacy_compatibility_part_6"
+      ],
+      "acceptance": [
+        "Existing room/project functionality works before and after migration."
+      ]
+    }
+  ],
+  "verification_profiles": [
+    "migration"
+  ],
+  "large_change": true,
+  "important_ux_change": false,
+  "flag_rationale": "This change alters the home/room schema and migrates all legacy rooms to be associated with a new home object. The decora-room-home-migration flag is required to protect production data during rollout and enable rollback or explicit human-controlled activation. As a data migration, the risk is high and requires sign-off before rollout.",
+  "requires_migration": true,
+  "migration_plan": "- All existing rooms are migrated into a new explicit default home (stable home_id).\n- Migration is idempotent; repeated runs do not duplicate/mix rooms.\n- All legacy data (briefs, styles, boards, chat, product selections, cart, budgets, approvals, and all context keys) is preserved.\n- No mutation occurs until the flag is enabled.\n- Recovery: on partial failures or interruptions, rerun safely migrates remaining/unmigrated rooms. Script checks existing associations.\n- There is no auto-commit, auto-approval, or design approval; spending/procurement gates remain human-controlled.\n- MCP project links/context keys are explicitly preserved; room/context lookup logic remains compatible.\n- Rollback: removing the migration flag disables home relationships (logic falls back), but does not delete new structure/data. Full data rollback would require manual intervention, which is documented.\n- Docstrings and tests document migration instructions, recovery, rerun/rollback, and compatibility.",
+  "risks": [
+    "Production data corruption if migration logic is wrong or not truly idempotent; mitigated by flag gating and exhaustive migration tests.",
+    "Partial/incomplete migrations must be fully recoverable; rerunning must restore to a correct state.",
+    "API/context key compatibility is mandatory; strong code review/testing required.",
+    "Rollback is not trivial: disabling the flag falls back but does not delete migrated data; full rollback requires human/manual steps, documented."
+  ],
+  "assumptions": [
+    "Room/project structures in app/project.py and app/store.py can be updated to support per-room home association.",
+    "No external service beyond in-app/project store data is involved in migration.",
+    "Duplicate room names are already supported before and after migration and must remain so.",
+    "All code paths continue to use stable context keys for room/project lookup; room names are not used as unique IDs."
+  ]
+}

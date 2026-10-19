@@ -1,17 +1,29 @@
 from __future__ import annotations
 
+import random
+import re
 import sys
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from factory.clock import Clock, SystemClock
+from factory.command_output import strip_ansi
 from factory.context.repo import analyze_repo
-from factory.errors import FactoryError, GovernanceError, RecipeError
+from factory.errors import (
+    FactoryError,
+    GovernanceError,
+    IncompleteBuildError,
+    InfrastructureError,
+    ProviderBlockedError,
+    SafetyError,
+)
 from factory.execution.portable import PortableWorkspace
 from factory.execution.worktree import WorktreeManager
-from factory.governance.policy import Policy, review_plan, review_ship
+from factory.governance.flags import is_production_path
+from factory.governance.policy import Policy, review_plan, review_ship, selected_flag_key
 from factory.harness.base import AgentHarness
 from factory.launchdarkly.flags import LaunchDarklyService
 from factory.models import JobEvent, JobState, Stage
@@ -19,8 +31,18 @@ from factory.observability.summary import build_summary
 from factory.observability.trace import JsonLog, Tracer
 from factory.orchestrator.graph import COMPONENTS, assert_legal
 from factory.orchestrator.store import JobStore
+from factory.plan_normalization import is_test_task
 from factory.publish.pr import Publisher
+from factory.task_queue import (
+    current_task,
+    missing_file_feedback,
+    reopen_import_task,
+    reopen_task,
+    tasks,
+    verification_feedback,
+)
 from factory.tools.layer import ToolLayer
+from factory.verification.commands import pytest_targets
 from factory.verification.gate import VerificationGate
 
 
@@ -52,7 +74,9 @@ class Factory:
         publisher_runner=None,
         id_factory: Callable[[], str] | None = None,
         on_event: Callable[[JobEvent], None] | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
+        self.sleep = sleep or time.sleep
         self.target_repo = target_repo.resolve()
         self.home = home
         self.policy = policy
@@ -146,6 +170,8 @@ class Factory:
         with self.tracer.span(f"stage.{current.value}", COMPONENTS[current], job_id=job.id):
             transition = self._bounded(job, handler)
         self._apply(job, current, transition)
+        if current == Stage.BUILD:
+            job.completed_builder_calls = job.builder_calls
         self.store.save(job)
 
     def finish(self, job: JobState) -> None:
@@ -160,14 +186,31 @@ class Factory:
                 job.worktree = self.execution.create(self.target_repo, job.id)
             self.store.save(job)
 
+    def _backoff(self, exc: BaseException, attempt: int) -> None:
+        delay = max(float(getattr(exc, "retry_after", None) or 0), 2 ** attempt)
+        self.sleep(min(60., delay + random.uniform(0, min(delay * .25, 1.))))
+
     def _bounded(self, job: JobState, handler: Callable[[JobState], Transition]) -> Transition:
         start = self.clock.now()
         try:
-            transition = handler(job)
+            for attempt in range(4):
+                start = self.clock.now()
+                try:
+                    transition = handler(job)
+                    break
+                except (InfrastructureError, TimeoutError, ConnectionError) as exc:
+                    self._emit(job, "specialist_agents", f"E18: {exc}; infrastructure attempt {attempt + 1}")
+                    if attempt == 3:
+                        return Transition(stage=Stage.AWAIT_HUMAN,
+                                          detail=f"Provider infrastructure retries exhausted: {exc}. Answer continue.",
+                                          resume_stage=job.stage)
+                    self._backoff(exc, attempt)
+        except ProviderBlockedError as exc:
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=job.stage)
         except FactoryError as exc:
             transition = Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
         limit = self.policy.timeout_for(job.stage.value)
-        if self.clock.now() - start > limit:
+        if job.stage != Stage.BUILD and self.clock.now() - start > limit:
             return Transition(
                 stage=Stage.FAILED,
                 detail=f"{job.stage.value} timed out",
@@ -228,13 +271,25 @@ class Factory:
             return Transition(stage=Stage.FAILED, detail="no context", error="no context")
         plan = self.harness.plan(job, job.context)
         job.plan = plan
+        job.current_task_id = None
+        job.completed_task_ids.clear()
+        job.task_original_files.clear()
+        job.task_summaries.clear()
         self._write_model(job, "implementation_plan.json", plan)
         return Transition(stage=Stage.GOVERN_PLAN, detail=f"recipe {plan.recipe} risk {plan.risk}")
 
     def _govern_plan(self, job: JobState) -> Transition:
         if job.plan is None:
             return Transition(stage=Stage.FAILED, detail="no plan", error="no plan")
+        previous_key = job.plan.flag_key
+        previous_notes = set(job.plan.normalization_notes)
         decision = review_plan(self.policy, job.plan, job)
+        for note in job.plan.normalization_notes:
+            if note not in previous_notes:
+                self._emit(job, "governance", note)
+        if job.fixed_flag_key and previous_key != job.plan.flag_key:
+            self._emit(job, "governance", "Fixed flag key override",
+                       proposed_key=previous_key or "<none>", fixed_key=job.plan.flag_key or "<none>")
         self._write_model(job, "implementation_plan.json", job.plan)
         if decision.retry_plan:
             used = job.retries.get("plan_repair", 0)
@@ -260,26 +315,152 @@ class Factory:
                 assert job.worktree is not None
                 info = job.worktree
             except FactoryError as exc:
-                return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+                return Transition(stage=Stage.AWAIT_HUMAN, detail=f"Worktree infrastructure: {exc}",
+                                  resume_stage=Stage.BUILD)
             job.worktree = info
             self._emit(job, "execution", f"worktree {info.path}", branch=info.branch)
         tools = self._tools(job)
+        task = current_task(job)
+        if task is None:
+            return Transition(stage=Stage.VERIFY, detail="all tasks checkpointed")
+        if job.builder_calls >= self.policy.max_job_attempts:
+            detail = f"Job reached max_job_attempts ({self.policy.max_job_attempts})."
+            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
         try:
-            result = self.harness.build(job, tools)
-        except RecipeError as exc:
-            return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=Stage.PLAN)
-        except GovernanceError as exc:
+            for infrastructure_attempt in range(4):
+                if job.builder_calls >= self.policy.max_job_attempts:
+                    detail = f"Job reached max_job_attempts ({self.policy.max_job_attempts})."
+                    return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+                job.builder_calls += 1
+                # Every provider invocation counts toward the job cap, including E18 retries.
+                # Infrastructure failures consume neither task corrections nor splits.
+                self.store.save(job)
+                try:
+                    result = self.harness.build(job, tools)
+                    break
+                except (InfrastructureError, TimeoutError, ConnectionError) as exc:
+                    self._emit(job, "specialist_agents", f"E18 {job.id}: {exc}; "
+                               f"infrastructure attempt {infrastructure_attempt + 1}")
+                    if infrastructure_attempt == 3:
+                        return Transition(stage=Stage.AWAIT_HUMAN,
+                                          detail=f"Builder infrastructure retries exhausted: {exc}; retry this call.",
+                                          resume_stage=Stage.BUILD)
+                    self._backoff(exc, infrastructure_attempt)
+        except ProviderBlockedError as exc:
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=Stage.BUILD)
+        except SafetyError as exc:
             return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
+        except IncompleteBuildError as exc:
+            return self._task_correction(job, str(exc), split=True)
         except FactoryError as exc:
-            used = job.retries.get("build", 0)
-            if used >= self.policy.max_retries.get("build", 3):
-                return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
-            job.retries["build"] = used + 1
-            job.govern_feedback = str(exc)
-            return Transition(stage=Stage.BUILD, detail=str(exc))
+            return self._task_correction(job, str(exc))
+        except (OSError, ValueError) as exc:
+            return self._task_correction(job, f"Builder could not apply this task ({type(exc).__name__}). "
+                                         "Check file paths and the proposal format, then correct this task.")
+        except Exception as exc:
+            return self._task_correction(job, f"Builder call failed: {type(exc).__name__}. "
+                                         "Return one complete BuildProposal.")
         job.builds.append(result)
+        job.checkpoint_shas.setdefault(task.id, []).append(result.commit)
+        job.task_summaries[task.id] = result.summary[:600]
         self._write_model(job, "build.json", result)
-        return Transition(stage=Stage.VERIFY, detail=result.summary)
+        self._write_model(job, "implementation_plan.json", job.plan)
+        for fallback in result.anchor_fallbacks:
+            self._emit(job, "execution", fallback, checkpoint=result.commit)
+        if isinstance(self.execution, PortableWorkspace) and job.worktree is not None:
+            self.execution.checkpoint(job.worktree)
+        # Save applied parts even if a quick check fails or the task needs more calls.
+        self.store.save(job)
+        # Check every changed production module, even on partial and correction calls.
+        # Use the real gate independently of test doubles supplying full verification.
+        imports = VerificationGate(self.target_repo, self.home).run_imports(
+            job, tools, tools.changed_files(job.worktree.base_sha))
+        for path, report in imports:
+            if not report.passed:
+                owner = reopen_import_task(job, path)
+                self._emit(job, "verification", f"Import check failed: {path}; owner {owner.id}")
+                return self._task_correction(job, f"E9: Import check failed for {path}\n{report.output}")
+        if result.correction:
+            return self._task_correction(job, result.correction)
+        if not result.task_complete:
+            job.govern_feedback = (
+                "Continue the remaining work for this task only. "
+                "Use insert_after/insert_before with a unique old anchor, "
+                "or append/prepend with new to add code to the current checkpoint. "
+                "Never use replace with empty old. "
+                "Return another smaller part with task_complete=false if necessary."
+            )
+            return Transition(stage=Stage.BUILD, detail=job.govern_feedback)
+        missing = [path for path in task.files if path not in job.deleted_files and not tools._resolve(path).is_file()]
+        if missing:
+            return self._task_correction(job, "\n".join(missing_file_feedback(job, path) for path in missing))
+        if task.quick_test_targets or result.quick_test_commands:
+            targets = list(dict.fromkeys([*task.quick_test_targets, *pytest_targets(result.quick_test_commands)]))
+            quick = self.verifier.run_quick(job, tools, targets)
+            reports = quick.commands
+            job.quick_verify_runs.setdefault(task.id, []).append(quick)
+            if not quick.passed:
+                output = "\n".join(report.output for report in quick.commands if not report.passed)
+                feedback = output or quick.actionable
+                if any(report.exit_code == 5 for report in quick.commands):
+                    feedback = ("No tests collected (pytest exit 5) in "
+                                + ", ".join(task.quick_test_targets or [" ".join(r.argv) for r in reports])
+                                + "\n" + feedback)
+                # The completed reporting task remains checkpointed when a module
+                # owner must repair the defect. reopen_task handles touched dependents.
+                previously_done = list(job.completed_task_ids)
+                if task.id not in job.completed_task_ids:
+                    job.completed_task_ids.append(task.id)
+                no_tests = any(report.exit_code == 5 for report in quick.commands)
+                owner = reopen_task(job, feedback, None if no_tests else tools)
+                ids = list(dict.fromkeys(re.findall(r"(?:FAILED|ERROR)\s+([^\s]+)", feedback)))
+                detail = ("E13: Failing test ids: " + ", ".join(ids) + "\n"
+                          + "\n".join(feedback.splitlines()[-60:]))
+                # Always retain the named exit-5 target and test IDs.
+                if any(report.exit_code == 5 for report in quick.commands):
+                    detail = feedback.splitlines()[0] + "\n" + detail
+                correction = self._task_correction(job, detail, failure_feedback=feedback)
+                if correction.stage != Stage.FAILED:
+                    return correction
+                # Advisory: do not reopen tasks when the quick budget is spent.
+                job.completed_task_ids = previously_done
+                self._emit(job, "verification", f"E13 advisory for {owner.id}: {feedback}")
+        clear_progress(job, task.id, "task")
+        if task.id not in job.completed_task_ids:
+            job.completed_task_ids.append(task.id)
+        job.current_task_id = None
+        job.govern_feedback = None
+        next_task = current_task(job)
+        return Transition(stage=Stage.BUILD if next_task else Stage.VERIFY,
+                          detail=f"checkpointed task {task.id}: {result.summary}")
+
+    def _task_correction(self, job: JobState, feedback: str, *, split: bool = False,
+                         failure_feedback: str | None = None) -> Transition:
+        task = current_task(job)
+        assert task is not None
+        feedback = strip_ansi(feedback)
+        job.govern_feedback = feedback
+        if split:
+            if is_test_task(task):
+                feedback += f" Return at most {task.max_test_functions} test functions per call using append."
+                job.govern_feedback = feedback
+            used_splits = job.task_split_attempts.get(task.id, 0)
+            job.task_split_attempts[task.id] = used_splits + 1
+            if used_splits >= self.policy.split_attempts:
+                feedback += (" Split allowance exhausted: return only one small region or one test now; "
+                             "use append/insert.")
+                job.govern_feedback = feedback
+            return Transition(stage=Stage.BUILD, detail=feedback)
+        if progress_retry_credit(job, task.id, failure_feedback or feedback, "task"):
+            feedback += f"\nProgress retry uncharged ({job.progress_retry_streaks['task:' + task.id]}/3)."
+            job.govern_feedback = feedback
+            return Transition(stage=Stage.BUILD, detail=feedback)
+        used = job.task_retries.get(task.id, 0)
+        if used >= self.policy.per_task_retries:
+            detail = f"Task {task.id} exhausted {self.policy.per_task_retries} retries; last error: {feedback}"
+            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+        job.task_retries[task.id] = used + 1
+        return Transition(stage=Stage.BUILD, detail=feedback)
 
     def _verify(self, job: JobState) -> Transition:
         tools = self._tools(job)
@@ -290,22 +471,48 @@ class Factory:
             diff_path = self._run_dir(job) / f"verify-{len(job.verify_runs)}.diff"
             diff_path.write_text(tools.diff(job.worktree.base_sha))
         if result.passed:
+            for task_id in job.verification_task_routes:
+                clear_progress(job, task_id, "verify")
             return Transition(stage=Stage.ENSURE_FLAG, detail="verification passed")
-        if result.classification == "ambiguous":
-            return Transition(
-                stage=Stage.AWAIT_HUMAN,
-                detail=result.actionable,
-                resume_stage=Stage.PLAN,
-            )
-        used = job.retries.get("verify", 0)
-        if used >= self.policy.max_retries.get("verify", 2):
-            return Transition(
-                stage=Stage.FAILED,
-                detail="verification retries exhausted",
-                error="verification retries exhausted\n" + result.actionable[-500:],
-            )
-        job.retries["verify"] = used + 1
-        return Transition(stage=Stage.BUILD, detail=f"verification {result.classification}")
+        missing = [path for path in job.plan.files
+                   if path not in job.deleted_files and not tools._resolve(path).is_file()] if job.plan else []
+        if missing:
+            feedback = missing_file_feedback(job, missing[0])
+            owner = reopen_task(job, missing[0], tools)
+        elif result.classification == "flag":
+            # Flag evidence belongs to production scope, regardless of which test
+            # ran last or which modules that test imports. Use stable plan ownership.
+            queue = tasks(job)
+            key = selected_flag_key(job)
+            candidates = list(dict.fromkeys(path for task in queue
+                for path in job.task_original_files[task.id] if is_production_path(path)))
+            containing_key = [path for path in candidates
+                              if key and tools._resolve(path).is_file() and key in tools.read(path)]
+            flag_modules = [path for path in candidates if Path(path).stem in {"flag", "flags"}]
+            paths = [path for path in flag_modules if path in containing_key] or containing_key or flag_modules
+            if not paths:
+                return Transition(stage=Stage.AWAIT_HUMAN,
+                                  detail="Flag audit has no production-file owner: " + result.actionable,
+                                  resume_stage=Stage.PLAN)
+            owner = reopen_task(job, paths[0])
+            feedback = verification_feedback(owner, result.actionable, tools)
+        else:
+            output = "\n".join(report.output for report in result.commands if not report.passed)
+            owner = reopen_task(job, output or result.actionable, tools)
+            feedback = verification_feedback(owner, output or result.actionable, tools)
+        failure = (output or result.actionable) if not missing and result.classification != "flag" else feedback
+        progress = progress_retry_credit(job, owner.id, failure, "verify")
+        if not progress and job.verify_retries_used >= self.policy.verify_retries:
+            detail = (f"E22: Job exhausted verify_retries ({self.policy.verify_retries}); "
+                      f"last verification failure: {feedback}")
+            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+        if not progress:
+            job.verify_retries_used += 1
+        job.verification_task_routes[owner.id] = job.verification_task_routes.get(owner.id, 0) + 1
+        if progress:
+            feedback += f"\nProgress retry uncharged ({job.progress_retry_streaks['verify:' + owner.id]}/3)."
+        job.govern_feedback = "E15: " + feedback
+        return Transition(stage=Stage.BUILD, detail=job.govern_feedback)
 
     def _ensure_flag(self, job: JobState) -> Transition:
         try:
@@ -332,9 +539,10 @@ class Factory:
             return Transition(stage=Stage.AWAIT_HUMAN, detail=report.summary, resume_stage=Stage.PLAN)
         used = job.retries.get("review", 0)
         if used >= self.policy.max_retries.get("review", 1):
+            reopen_task(job, report.summary)
             return Transition(stage=Stage.AWAIT_HUMAN, detail=report.summary, resume_stage=Stage.BUILD)
         job.retries["review"] = used + 1
-        job.govern_feedback = report.summary
+        reopen_task(job, report.summary)
         return Transition(stage=Stage.BUILD, detail=report.summary)
 
     def _govern_ship(self, job: JobState) -> Transition:
@@ -345,12 +553,9 @@ class Factory:
         if decision.allowed:
             return Transition(stage=Stage.DRAFT_PR, detail=decision.reason)
         if decision.retry_build:
-            used = job.retries.get("govern", 0)
-            if used >= self.policy.max_retries.get("govern", 1):
-                return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
-            job.retries["govern"] = used + 1
-            job.govern_feedback = decision.reason
-            return Transition(stage=Stage.BUILD, detail=decision.reason)
+            job.retries["govern"] = job.retries.get("govern", 0) + 1
+            reopen_task(job, decision.reason)
+            return self._task_correction(job, decision.reason)
         return Transition(stage=Stage.FAILED, detail=decision.reason, error=decision.reason)
 
     def _draft_pr(self, job: JobState) -> Transition:
@@ -394,7 +599,8 @@ class Factory:
     def _tools(self, job: JobState) -> ToolLayer:
         if job.worktree is None:
             raise FactoryError("no worktree")
-        return ToolLayer(Path(job.worktree.path), self.policy, target_repo=self.target_repo)
+        return ToolLayer(Path(job.worktree.path), self.policy, target_repo=self.target_repo,
+                         receipt_dir=self._run_dir(job))
 
     def _run_dir(self, job: JobState) -> Path:
         path = self.home / "runs" / job.id
@@ -429,3 +635,34 @@ def _json(payload: dict[str, object]) -> str:
     import json
 
     return json.dumps(payload, indent=2) + "\n"
+
+
+def clear_progress(job: JobState, task_id: str, budget: str) -> None:
+    key = f'{budget}:{task_id}'
+    job.failure_test_ids.pop(key, None)
+    job.failure_test_counts.pop(key, None)
+    job.progress_retry_streaks.pop(key, None)
+
+
+def progress_retry_credit(job: JobState, task_id: str, feedback: str, budget: str) -> bool:
+    """Persist pytest failure signatures separately for each owner and retry budget."""
+    key = f'{budget}:{task_id}'
+    ids = {test for test in re.findall(r'^(?:FAILED|ERROR)\s+([^\s]+)', feedback, re.MULTILINE)
+           if '.py' in test or '::' in test}
+    counts = re.findall(r'(\d+) (failed|errors?)\b', feedback)
+    # Pytest can print multiple summaries; use the last count of each category.
+    summary = {kind.rstrip('s'): int(count) for count, kind in counts}
+    count = sum(summary.values()) if summary else None
+    previous = set(job.failure_test_ids.get(key, []))
+    previous_count = job.failure_test_counts.get(key)
+    improved = bool(ids and previous and ids < previous) or (
+        count is not None and previous_count is not None and count < previous_count)
+    streak = job.progress_retry_streaks.get(key, 0)
+    free = improved and streak < 3
+    job.progress_retry_streaks[key] = streak + 1 if free else 0
+    job.failure_test_ids[key] = sorted(ids)
+    if count is None:
+        job.failure_test_counts.pop(key, None)
+    else:
+        job.failure_test_counts[key] = count
+    return free

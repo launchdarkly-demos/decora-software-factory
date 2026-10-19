@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from factory.errors import FactoryError
-from factory.governance.policy import Policy, flag_keys, flag_required, selected_flag_key
+from factory.governance.policy import Policy, flag_required, issue_supplied_flag_key, selected_flag_key
 from factory.launchdarkly.client import LaunchDarklyClient
 from factory.launchdarkly.token import resolve_token, scrub
 from factory.models import FlagAssurance, JobState
@@ -106,7 +106,7 @@ class LaunchDarklyService:
 
         status, payload = client.request("GET", f"/flags/{project}/{key}", query=query)
         created = False
-        if status == 404 and flag_keys(job.model_copy(update={"plan": None})):
+        if status == 404 and issue_supplied_flag_key(job):
             raise FactoryError(f"Issue names existing flag {key}, but it was not found in LaunchDarkly.")
         if status == 404:
             description = scrub(_description(job, ""), token)

@@ -3,8 +3,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from factory.models import BuildResult, ReviewReport, Stage
 from factory.orchestrator.graph import LEGAL
 from tests.support import (
@@ -37,8 +35,8 @@ def test_verify_failure_returns_to_the_builder_then_passes(tmp_path: Path) -> No
     job = make_factory(tmp_path, repo, harness, verifier=verifier).run(feature())
 
     assert job.stage == Stage.DONE
-    assert job.retries["verify"] == 1
-    assert len(job.builds) == 2
+    assert job.verify_retries_used == 1
+    assert len(job.builds) == 3
     assert job.pr is not None and job.pr.dry_run
     assert job.pr.url is None
 
@@ -50,19 +48,19 @@ def test_verify_retries_exhausted_fails_without_a_pr(tmp_path: Path) -> None:
 
     assert job.stage == Stage.FAILED
     assert job.pr is None
-    assert "retries exhausted" in (job.error or "")
-    assert len(job.verify_runs) == 3
+    assert "E22: Job exhausted verify_retries (4)" in (job.error or "")
+    assert len(job.verify_runs) == 5
 
 
-def test_ambiguous_verification_pauses_for_a_human(tmp_path: Path) -> None:
+def test_ambiguous_verification_returns_to_builder(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor")
-    verifier = ScriptedVerifier([failed_verify("which route should this wrap?", "ambiguous")])
+    verifier = ScriptedVerifier([failed_verify("which route should this wrap?", "ambiguous"), passed_verify()])
     job = make_factory(tmp_path, repo, ScriptedHarness([low_plan()]), verifier=verifier).run(feature())
 
-    assert job.stage == Stage.AWAIT_HUMAN
-    assert job.question is not None
-    assert "which route" in job.question
-    assert job.resume_stage == Stage.PLAN
+    assert job.stage == Stage.DONE
+    assert job.task_retries == {}
+    assert job.verify_retries_used == 1
+    assert len(job.verify_runs) == 2
 
 
 def test_high_risk_plan_pauses_and_resume_builds(tmp_path: Path) -> None:
@@ -127,17 +125,18 @@ def test_review_changes_requested_loops_to_the_builder(tmp_path: Path) -> None:
 
     assert job.stage == Stage.DONE
     assert job.retries["review"] == 1
-    assert len(job.builds) == 2
+    assert len(job.builds) == 3
 
 
-def test_stage_timeout_fails_the_job(tmp_path: Path) -> None:
+def test_build_timeout_retries_infrastructure_then_pauses(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("factory.orchestrator.machine.time.sleep", lambda _: None)
     repo = init_repo(tmp_path / "decor")
     clock = _JumpClock()
 
     class SlowHarness(ScriptedHarness):
         def build(self, job, tools):
             clock.advance(500)
-            return super().build(job, tools)
+            raise TimeoutError("call timeout")
 
     rules = policy_with_build_timeout(10)
     job = make_factory(
@@ -149,21 +148,24 @@ def test_stage_timeout_fails_the_job(tmp_path: Path) -> None:
         policy=rules,
     ).run(feature())
 
-    assert job.stage == Stage.FAILED
-    assert job.error is not None
-    assert "timed out" in job.error
+    assert job.stage == Stage.AWAIT_HUMAN
+    assert job.task_retries == {}
+    assert job.builder_calls == 4
+    assert "infrastructure retries exhausted" in job.question
     assert job.pr is None
 
 
-def test_unexpected_build_error_removes_the_worktree(tmp_path: Path) -> None:
+def test_unexpected_build_error_uses_task_budget_and_removes_the_worktree(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor")
 
     class Boom(ScriptedHarness):
         def build(self, job, tools):
             raise RuntimeError("boom")
 
-    with pytest.raises(RuntimeError, match="boom"):
-        make_factory(tmp_path, repo, Boom([low_plan()])).run(feature())
+    job = make_factory(tmp_path, repo, Boom([low_plan()])).run(feature())
+    assert job.stage == Stage.FAILED
+    assert "exhausted 4 retries" in job.error
+    assert "RuntimeError" in job.error
 
     assert list((tmp_path / "home" / "worktrees").glob("job-*")) == []
     leftover = subprocess.run(
@@ -195,7 +197,8 @@ def test_bad_edit_returns_to_the_builder(tmp_path: Path) -> None:
     ).run(feature())
 
     assert job.stage == Stage.DONE
-    assert job.retries["build"] == 1
+    assert job.task_retries["T1"] == 1
+    assert job.verify_retries_used == 0
     assert job.pr is not None
 
 
@@ -233,7 +236,7 @@ def test_missing_flag_never_reaches_a_pull_request(tmp_path: Path) -> None:
         )
 
     harness = ScriptedHarness(
-        [low_plan()],
+        [low_plan(files=['app/note.py', 'test_note.py'])],
         builds=[write_note],
         reviews=[ReviewReport(verdict="approve", findings=[], risks=[], summary="looks fine")],
     )
@@ -262,7 +265,7 @@ def test_room_mood_demo_loop_on_a_worktree(tmp_path: Path) -> None:
     body = Path(job.pr.body_path).read_text() if job.pr else ""
 
     assert job.stage == Stage.DONE
-    assert job.retries["verify"] == 1
+    assert job.verify_retries_used == 1
     assert len(job.builds) == 2
     assert "FLAG_DEFAULT = True" in first
     assert "FLAG_DEFAULT = False" in diff
@@ -280,14 +283,14 @@ def test_room_mood_demo_loop_on_a_worktree(tmp_path: Path) -> None:
     assert (tmp_path / "home" / "runs" / job.id / "review_report.json").exists()
 
 
-def test_missing_capabilities_anchor_pauses(tmp_path: Path) -> None:
+def test_missing_capabilities_anchor_uses_bounded_task_corrections(tmp_path: Path) -> None:
     repo = init_repo(tmp_path / "decor", capabilities=False)
     from factory.intake.load import load_feature
 
     job = make_factory(tmp_path, repo).run(load_feature(ROOT / "samples" / "decor-room-mood.json"))
-    assert job.stage == Stage.AWAIT_HUMAN
-    assert job.question is not None
-    assert "capabilities" in job.question
+    assert job.stage == Stage.FAILED
+    assert job.task_retries == {"T1": 4}
+    assert "capabilities" in job.error
     assert not (repo / "app" / "room_mood.py").exists()
 
 
@@ -323,27 +326,24 @@ def policy_with_build_timeout(seconds: float):
     return rules.model_copy(update={"stage_timeout_seconds": limits})
 
 
-def test_existing_file_write_returns_feedback_to_builder(tmp_path):
+def test_existing_file_write_is_applied(tmp_path):
     from factory.agents.apply import apply_proposal
     from factory.models import BuildProposal, FileEdit, WorktreeInfo
     from tests.support import bare_job
 
     repo = init_repo(tmp_path / 'repo')
-    original = (repo / 'server.py').read_text()
 
-    class InvalidWrite(ScriptedHarness):
+    class FullWrite(ScriptedHarness):
         def build(self, job, tools):
             return apply_proposal(job, tools, BuildProposal(
                 summary='Update existing file', commit_message='Update server',
-                edits=[FileEdit(path='server.py', kind='write', content='overwrite')]))
+                edits=[FileEdit(path='server.py', kind='write', content='VALUE = 42\n')]))
 
-    factory = make_factory(tmp_path, repo, InvalidWrite([]))
+    factory = make_factory(tmp_path, repo, FullWrite([]))
     job = bare_job(tmp_path, stage=Stage.BUILD, plan=low_plan(files=['server.py']),
                    worktree=WorktreeInfo(path=str(repo), branch='main', base_sha='HEAD'))
     result = factory._build(job)
-    assert result.stage == Stage.BUILD
-    assert 'Use replace for existing file: server.py' in job.govern_feedback
-    assert job.retries['build'] == 1
-    assert (repo / 'server.py').read_text() == original
-    job.retries['build'] = factory.policy.max_retries['build']
-    assert factory._build(job).stage == Stage.FAILED
+    assert result.stage == Stage.VERIFY
+    assert job.task_retries == {}
+    assert (repo / 'server.py').read_text() == 'VALUE = 42\n'
+    assert job.checkpoint_shas['T1'] == [job.builds[-1].commit]

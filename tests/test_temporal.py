@@ -45,6 +45,9 @@ def test_interrupted_build_restores_only_owned_worktree(tmp_path):
     result = activities.execute(request)
     assert result['stage'] == 'verify'
     assert len(result['builds']) == 1
+    assert result['builder_calls'] == 1
+    assert result['completed_task_ids'] == ['T1']
+    assert result['checkpoint_shas'] == {'T1': [result['builds'][0]['commit']]}
     assert 'ROOM_MOOD_FLAG' not in (repo / 'app/flags.py').read_text()
     assert Path(result['worktree']['path']).exists()
     factory.finish(factory.store.load(job.id).model_copy(update={'stage': Stage.FAILED}))

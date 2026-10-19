@@ -1,26 +1,36 @@
 from __future__ import annotations
 
+import difflib
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from factory.errors import FactoryError, GovernanceError
+from factory.command_output import plain_command, strip_ansi
+from factory.errors import FactoryError, SafetyError
 from factory.gitcmd import git_env
 from factory.governance.policy import Policy
 from factory.models import CommandReport
+from factory.tools.safety import check_content
 
 
 class ToolLayer:
     """Allowlisted commands and path-checked edits. Cwd is always the worktree."""
 
-    def __init__(self, worktree: Path, policy: Policy, *, target_repo: Path | None = None) -> None:
+    def __init__(self, worktree: Path, policy: Policy, *, target_repo: Path | None = None,
+                 receipt_dir: Path | None = None) -> None:
+        self.receipt_dir = receipt_dir
         self.worktree = worktree.resolve()
         self.policy = policy
         self.target_repo = target_repo.resolve() if target_repo else None
 
     def run(self, argv: list[str], *, output_limit: int = 20_000) -> CommandReport:
+        argv = plain_command(argv)
         self.policy.check_command(argv)
+        return self._run(argv, output_limit=output_limit)
+
+    def _run(self, argv: list[str], *, output_limit: int = 20_000) -> CommandReport:
+        """Factory-owned commands only; agent commands always go through run()."""
         try:
             proc = subprocess.run(
                 argv,
@@ -37,7 +47,7 @@ class ToolLayer:
         except subprocess.TimeoutExpired as exc:
             output = f"timed out after {self.policy.command_timeout_seconds}s\n{exc}"
             return CommandReport(argv=argv, exit_code=124, output=output, passed=False)
-        output = (proc.stdout or "") + (proc.stderr or "")
+        output = strip_ansi((proc.stdout or "") + (proc.stderr or ""))
         if len(output) > output_limit:
             output = "[output truncated]\n" + output[-output_limit:]
         return CommandReport(
@@ -51,12 +61,15 @@ class ToolLayer:
         path = self._resolve(rel)
         if not path.exists():
             raise FactoryError(f"missing file: {rel}")
-        return path.read_text()
+        with path.open(newline="") as stream:
+            return stream.read()
 
     def write(self, rel: str, content: str) -> None:
         path = self._resolve(rel)
+        check_content(content)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        with path.open("w", newline="") as stream:
+            stream.write(content)
 
     def replace(self, rel: str, old: str, new: str) -> None:
         text = self.read(rel)
@@ -73,7 +86,10 @@ class ToolLayer:
             added = self.run(["git", "add", "--", rel])
             if not added.passed:
                 raise FactoryError(added.output.strip() or f"git add failed for {rel}")
-        committed = self.run(["git", "commit", "-m", message])
+        staged = self.run(["git", "diff", "--cached", "--quiet", "--", *paths])
+        if staged.exit_code == 0:
+            return self.head_sha()
+        committed = self.run(["git", "commit", "--only", "-m", message, "--", *paths])
         if not committed.passed:
             raise FactoryError(committed.output.strip() or "git commit failed")
         return self.head_sha()
@@ -94,18 +110,25 @@ class ToolLayer:
         return result.output
 
     def changed_files(self, base_sha: str) -> list[str]:
-        result = self.run(["git", "diff", "--name-only", base_sha, "HEAD"])
+        result = self.run(["git", "diff", "--no-renames", "--name-only", base_sha, "HEAD"])
         if not result.passed:
             return []
         return [line for line in result.output.splitlines() if line.strip()]
 
     def _resolve(self, rel: str) -> Path:
         if rel.startswith("/") or rel.startswith("~"):
-            raise GovernanceError(f"path must stay inside the worktree: {rel}")
+            raise SafetyError(f"Safety violation: path outside the root on `{rel}`.")
+        if ".." in Path(rel.replace("\\", "/")).parts:
+            raise SafetyError(f"Safety violation: .. on `{rel}`.")
         self.policy.check_path(rel)
-        path = (self.worktree / rel).resolve()
+        unresolved = self.worktree / rel
+        if any(part.is_symlink() for part in [unresolved, *unresolved.parents]
+               if part.is_relative_to(self.worktree)):
+            raise SafetyError(f"Safety violation: symlink path on `{rel}`.")
+        path = unresolved.resolve()
         if not path.is_relative_to(self.worktree):
-            raise GovernanceError(f"path escapes the worktree: {rel}")
+            raise SafetyError(f"Safety violation: symlink escape on `{rel}`.")
+        self.policy.check_path(path.relative_to(self.worktree).as_posix())
         return path
 
     def _env(self) -> dict[str, str]:
@@ -115,25 +138,54 @@ class ToolLayer:
         env["GIT_CEILING_DIRECTORIES"] = str(self.worktree.parent)
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTHONPATH", None)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["DECORA_PERSIST"] = "0"
         env["PYTHON_DOTENV_DISABLED"] = "1"
         env.update(self.policy.command_environment)
+        env["NO_COLOR"] = "1"
+        env.pop("FORCE_COLOR", None)
+        env.pop("CLICOLOR_FORCE", None)
         for key in ("LD_SDK_KEY", "LAUNCHDARKLY_SDK_KEY", "OPENAI_API_KEY", "LAUNCHDARKLY_API_TOKEN"):
             env.pop(key, None)
         return env
 
 
 def _anchor_error(rel: str, text: str, old: str, count: int) -> str:
-    preview = old.replace("\n", "\\n")
-    if len(preview) > 120:
-        preview = preview[:120] + "..."
-    first = next((line for line in old.splitlines() if line.strip()), "")
-    hint = ""
-    if first and text.count(first) == 1:
-        start = text.find(first)
-        following = text[start : start + 180].replace("\n", "\\n")
-        hint = (
-            f" That line exists once. Use only this single line as old, copied exactly: {first!r}. "
-            f"Text at that line: {following}"
-        )
-    return f"{rel} anchor matched {count} times. Anchor was: {preview}.{hint}"
+    if not old:
+        return ("`replace` and `insert_*` need a non-empty unique anchor. "
+                "To add code without one, use `append` or `prepend`.")
+    if count:
+        positions = []
+        offset = 0
+        for _ in range(count):
+            offset = text.index(old, offset)
+            positions.append(str(text.count("\n", 0, offset) + 1))
+            offset += len(old)
+        return (f"{rel}: anchor matched {count} times; line numbers: {', '.join(positions)}. "
+                "Extend the anchor until it's unique.")
+    anchor_lines = old.split("\n") or [old]
+    # splitlines() silently eats controls such as \x1c and \x85; keep them visible.
+    ranked = sorted(enumerate(text.split("\n"), 1), key=lambda pair: (
+        -max(difflib.SequenceMatcher(None, line, pair[1]).ratio() for line in anchor_lines), pair[0]))[:3]
+    nearest = "\n".join(f"{number}: {line.encode('unicode_escape').decode('ascii')}" for number, line in ranked)
+    # Prefix occurrence is monotonic, so binary search avoids quadratic scans
+    # for long rejected anchors. A tie uses the first occurrence deterministically.
+    low, high = 0, len(old)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if old[:middle] in text:
+            low = middle
+        else:
+            high = middle - 1
+    prefix = old[:low]
+    start = text.find(prefix) if prefix else 0
+    divergent_line = old.count("\n", 0, low) + 1
+    file_line = text.count("\n", 0, start + low) + 1
+    file_lines = text.split("\n")
+    context = "\n".join(f"{index + 1}: {file_lines[index]}"
+                        for index in range(max(0, file_line - 6), min(len(file_lines), file_line + 5)))
+    divergence = (f"Longest occurring anchor prefix ({low} characters):\n{prefix}\n"
+                  f"First divergent anchor line {divergent_line}:\n{anchor_lines[divergent_line - 1]}\n"
+                  f"Verbatim file lines around divergence (line {file_line}, ±5):\n{context}\n")
+    return (f"{rel}: anchor matched 0 times. Anchor (first 200 characters): {old[:200]!r}\n"
+            f"{divergence}Closest matching lines:\n{nearest}\nAnchors must occur exactly once in the current file.")

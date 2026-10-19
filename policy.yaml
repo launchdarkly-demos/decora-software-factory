@@ -3,21 +3,27 @@
 # behavior on. A human does that, outside this process.
 
 version: 1
+builder_max_turns: 40
+builder_max_output_tokens: 16000
+verify_retries: 4
+per_task_retries: 4
+max_job_attempts: 40
+split_attempts: 4
+whole_file_limit: 64000
+excerpt_budget: 160000
 
 max_retries:
-  verify: 2
   review: 1
   govern: 1
   plan: 2
   plan_repair: 2
-  build: 3
 
 stage_timeout_seconds:
   intake: 30
   context: 60
   plan: 120
   govern_plan: 30
-  build: 180
+  build: 600
   verify: 180
   ensure_flag: 90
   review: 120

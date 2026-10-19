@@ -4,7 +4,7 @@ from factory.agents.apply import apply_proposal
 from factory.agents.recipes import room_mood_proposal
 from factory.agents.reviewer import review_deterministically
 from factory.harness.tokens import charge
-from factory.models import ImplementationPlan, JobState, RepoContext
+from factory.models import ImplementationPlan, JobState, PlanTask, RepoContext
 from factory.tools.layer import ToolLayer
 
 
@@ -48,6 +48,15 @@ class MockHarness:
                 recipe="unsupported",
                 context_files=list(context.top_files),
             )
+        if plan.files:
+            if not any('FastAPI(' in snippet.text for snippet in context.snippets if snippet.path == 'server.py'):
+                plan.files.remove('test_room_mood_api.py')
+            plan.tasks = [PlanTask(id='T1', description=plan.summary, files=list(plan.files),
+                                   acceptance=[*(feature.acceptance or ["Room mood honors the flag and defaults off"]),
+                                               f"In app/flags.py define ROOM_MOOD_FLAG = '{plan.flag_key}' "
+                                               "and FLAG_DEFAULT = False.",
+                                               "Gate new behavior with get_flag(ROOM_MOOD_FLAG, context, "
+                                               "default=FLAG_DEFAULT)."])]
         charge(job, feature.model_dump_json() + context.model_dump_json(), plan.model_dump_json())
         return plan
 

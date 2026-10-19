@@ -198,7 +198,7 @@ The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file l
 
 | Rule | Implementation and regression work | Status |
 | --- | --- | --- |
-| §4 count only removed base content; exempt new files/job additions; retain checkpoint restore | `factory/agents/apply.py`; `tests/test_issue29_replays.py` | Required by #29 |
-| §4 E9 keep existing lines, small replace/insert edits, no plan-field advice | `factory/agents/apply.py`; base-file rejection regression | Required by #29 |
-| §8 task scope within plan.files, remove empty tasks and repoint dependencies with notes | `factory/plan_normalization.py`; captured r7 plan regression | Required by #29 |
-| §10/§11 replay_r7 35-line stub fully replaced by its owner, DONE/draft | `tests/test_issue29_replays.py:test_replay_r7` | Required by #29 |
+| §4 count only removed base content; exempt new files/job additions; retain checkpoint restore | `factory/agents/apply.py`; `tests/test_issue29_replays.py` | Covered |
+| §4 E9 keep existing lines, small replace/insert edits, no plan-field advice | `factory/agents/apply.py`; base-file rejection regression | Covered |
+| §8 task scope within plan.files, remove empty tasks and repoint dependencies with notes | `factory/plan_normalization.py`; captured r7 plan regression | Covered |
+| §10/§11 replay_r7 35-line stub fully replaced by its owner, DONE/draft | `tests/test_issue29_replays.py:test_replay_r7` | Covered |

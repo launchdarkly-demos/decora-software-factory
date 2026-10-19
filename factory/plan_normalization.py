@@ -23,6 +23,37 @@ def _test_file(path: str) -> bool:
     return path.endswith('.py') and not is_production_path(path)
 
 
+def normalize_task_files(plan: ImplementationPlan) -> None:
+    """Remove scope echoed from an earlier plan, preserving prerequisite edges."""
+    allowed = set(plan.files)
+    removed: dict[str, list[str]] = {}
+    for task in plan.tasks:
+        dropped = [path for path in task.files if path not in allowed]
+        if dropped:
+            _note(plan, f'Dropped files outside plan.files from {task.id}: {", ".join(dropped)}.')
+            task.files = [path for path in task.files if path in allowed]
+        task.rewrite_files = [path for path in task.rewrite_files if path in task.files]
+        if not task.files:
+            removed[task.id] = list(task.depends_on)
+            _note(plan, f'Removed empty task {task.id}; repoint dependencies to {task.depends_on}.')
+
+    def expand(dependency: str, seen: frozenset[str] = frozenset()) -> list[str]:
+        if dependency not in removed:
+            return [dependency]
+        if dependency in seen:
+            return []
+        return [item for dep in removed[dependency] for item in expand(dep, seen | {dependency})]
+
+    plan.tasks = [task for task in plan.tasks if task.id not in removed]
+    for task in plan.tasks:
+        dependencies = list(dict.fromkeys(item for dep in task.depends_on for item in expand(dep)))
+        if dependencies != task.depends_on:
+            _note(plan, f'Repointed {task.id} dependencies: {task.depends_on} -> {dependencies}.')
+            task.depends_on = dependencies
+    if plan.flag_task_id in removed:
+        plan.flag_task_id = None
+
+
 def normalize_test_tasks(plan: ImplementationPlan) -> None:
     """Split files, broad migration/compatibility work and oversized acceptance lists.
 
@@ -30,6 +61,7 @@ def normalize_test_tasks(plan: ImplementationPlan) -> None:
     structured plan. Each generated task is bounded further in the Builder prompt.
     IDs/dependencies remain stable on repeated governance/resume.
     """
+    normalize_task_files(plan)
     result = []
     added: set[tuple[str, str]] = set()
     replacements: dict[str, str] = {}
@@ -91,6 +123,7 @@ def normalize_flag_task(policy: Policy, job: JobState, plan: ImplementationPlan)
     from factory.governance.flags import is_production_path
     from factory.governance.policy import flag_keys, flag_required
 
+    normalize_task_files(plan)
     keys = flag_keys(job, plan)
     if not flag_required(policy, job, plan) or len(keys) != 1:
         return

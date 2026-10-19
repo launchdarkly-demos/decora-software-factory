@@ -113,9 +113,9 @@ def _apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) ->
     for rel, content in staged.items():
         if content is not None:
             _check_content_at(content, rel)
-    check_destructive_edits(tools, staged, task.rewrite_files if task else [])
+    check_destructive_edits(tools, staged, task.rewrite_files if task else [], job.worktree.base_sha)
     prepare_staged(tools, staged)
-    check_destructive_edits(tools, staged, task.rewrite_files if task else [])
+    check_destructive_edits(tools, staged, task.rewrite_files if task else [], job.worktree.base_sha)
     for rel, content in staged.items():
         if content is not None:
             _check_content_at(content, rel)
@@ -211,22 +211,37 @@ def _check_content_at(content: str, path: str) -> None:
         raise SafetyError(f"Safety violation: credential-like content in `{path}`.") from None
 
 
-def check_destructive_edits(tools: ToolLayer, staged: dict[str, str | None], rewrite_files: list[str]) -> None:
-    """Compare checkpoint source to the final proposal, never individual anchors."""
+def check_destructive_edits(
+    tools: ToolLayer, staged: dict[str, str | None], rewrite_files: list[str], base_sha: str,
+) -> None:
+    """Count proposal removals only where checkpoint lines match the job base."""
     for path, after in staged.items():
         if path in rewrite_files or not tools._resolve(path).is_file():
             continue
-        before = tools.read(path).splitlines()
-        if len(before) < 20:
+        base = git(tools.worktree, 'show', f'{base_sha}:{path}')
+        if base.returncode:
+            # Missing paths are exempt; other Git failures must not disable the guard.
+            exists = git(tools.worktree, 'cat-file', '-e', base_sha + '^{commit}')
+            listing = git(tools.worktree, 'ls-tree', base_sha, '--', path)
+            if exists.returncode or listing.returncode or listing.stdout.strip():
+                raise FactoryError(f'Cannot read base content for {path}')
             continue
+        base_lines = base.stdout.splitlines()
+        if len(base_lines) < 20:
+            continue
+        before = tools.read(path).splitlines()
+        base_indices = {index for block in difflib.SequenceMatcher(
+            None, base_lines, before, autojunk=False).get_matching_blocks()
+            for index in range(block.b, block.b + block.size)}
         removed = [(start, end) for kind, start, end, _, _ in
                    difflib.SequenceMatcher(None, before, (after or '').splitlines(), autojunk=False).get_opcodes()
                    if kind in {'delete', 'replace'}]
-        count = sum(end - start for start, end in removed)
-        if count > len(before) * 0.5:
-            start, end = removed[0]
-            head = '\n'.join(f'{index + 1:>5} | {before[index]}' for index in range(start, min(end, start + 20)))
+        removed_base = [index for start, end in removed for index in range(start, end) if index in base_indices]
+        count = len(removed_base)
+        if count > len(base_lines) * 0.5:
+            start = removed_base[0]
+            head = '\n'.join(f'{index + 1:>5} | {before[index]}' for index in removed_base[:20])
             raise DestructiveEditError(
-                f'E9: {path}:{start + 1}:1: destructive edit removes {count}/{len(before)} lines '
-                f'({count / len(before):.0%}); more than 50% requires this task to declare '
-                f'rewrite_files=["{path}"] for a deliberate rewrite. Head of removed region:\n{head}')
+                f'E9: {path}:{start + 1}:1: destructive edit removes {count}/{len(base_lines)} lines '
+                f'({count / len(base_lines):.0%}) of base content; keep existing lines and change only the needed '
+                f'region using several smaller replace/insert_* edits. Head of removed region:\n{head}')

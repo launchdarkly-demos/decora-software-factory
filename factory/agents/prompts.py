@@ -22,7 +22,8 @@ Rules:
   Use repository tools to resolve uncertain paths; do not guess stylesheet names.
   Preserve acceptance criteria, duplicate-name behavior, exclusions and required tests.
 - Declare rewrite_files only for deliberate rewrites of named existing files. Removing more
-  than 50% of an existing file (20+ lines) otherwise rejects the whole proposal.
+  than 50% of base-commit content in a base file (20+ lines) otherwise rejects the whole
+  proposal. Files absent at base and lines added earlier in this job are exempt.
 - Test tasks must cover one behavior area and at most six test functions. Split migration
   and compatibility testing into multiple tasks, each creating or appending to a test file.
 - mandatory_flag_key.key must be used when policy requires a flag; never invent another key.

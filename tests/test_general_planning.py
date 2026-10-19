@@ -177,13 +177,13 @@ def test_invalid_plan_repairs_automatically_then_preserves_risk_approval(tmp_pat
 
     repo = init_repo(tmp_path / 'repo')
     task = PlanTask(id='backend', description='Change backend', files=['server.py'], acceptance=['works'])
-    invalid = low_plan(files=[], tasks=[task], risk='high')
+    invalid = low_plan(files=['server.py'], tasks=[task.model_copy(update={'acceptance': []})], risk='high')
     valid = low_plan(files=['server.py'], tasks=[task], risk='high')
 
     class Planner(ScriptedHarness):
         def plan(self, job, context):
             if job.plan:
-                assert 'server.py' in job.govern_feedback
+                assert 'backend needs acceptance checks' in job.govern_feedback
             return super().plan(job, context)
 
     job = make_factory(tmp_path, repo, Planner([invalid, valid])).run(feature())
@@ -207,7 +207,7 @@ def test_plan_repair_exhaustion_pauses_with_actionable_details(tmp_path):
     assert 'web/styles.css' in job.question
 
 
-def test_plan_validation_reports_all_file_defects_together(tmp_path):
+def test_plan_validation_drops_stale_scope_and_reports_invalid_context(tmp_path):
     from factory.models import RepoContext
 
     plan = low_plan(files=[], context_files=['web/styles.css'], tasks=[
@@ -218,8 +218,12 @@ def test_plan_validation_reports_all_file_defects_together(tmp_path):
                    file_inventory=['server.py', 'web/site.css']))
     decision = review_plan(policy(), plan, job)
     assert decision.retry_plan
-    for path in ['server.py', 'web/site.css', 'web/styles.css']:
-        assert path in decision.reason
+    assert 'web/styles.css' in decision.reason
+    notes = '\n'.join(plan.normalization_notes)
+    for path in ['server.py', 'web/site.css']:
+        assert path not in decision.reason
+        assert path in notes
+    assert all(set(task.files) <= set(plan.files) for task in plan.tasks)
     assert plan.files == ['app/flags.py']  # Only the approved deterministic flag module is added.
 
 

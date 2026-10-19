@@ -272,7 +272,6 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 | #26 / `job-gh-5873513712-r5` | `app/store.py` lost its first 238 lines (the `-1,241 +1,3` hunk); collection errors went to tests; reopened test cutoff spent retries; flag key drift | §4 destructive guard and checkpoint restore; §8 per-checkpoint imports and innermost production owner; §2 bounded test normalization; E1 split preservation; §8 fixed policy key |
 | #27 / `job-gh-5873513712-r6` | Three RateLimitErrors spent task retries and FAILED after five checkpoints | §5 provider classification, header-aware backoff and current-stage pause preserving checkpoints |
 | #28 / `job-gh-5873513712-r6` | Required key existed without a production flag task; human plan send-back needed | §8 deterministic required flag task before tests, governance check and receipts |
-
 | #29 / `job-gh-5873513712-r7` | Guard rejected rewrites of a same-job stub; E9 asked Builder to change plan fields; stale task scope survived plan revisions | §4 base-content-only guard and actionable E9; §8 plan-file consistency; §11 replay_r7 |
 
 ## 11. Acceptance criteria

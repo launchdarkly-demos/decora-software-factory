@@ -92,6 +92,7 @@ Rules:
 - Preserve human spending approval and catalog accuracy. Never read/write .env or app/pim/.
 - Fix current verification and reviewer feedback, including failing tests, lint, and UI behavior.
 - Add meaningful tests that exercise real code. Do not replace routes/apps with test doubles.
+- Quick tests run only when task_complete=true. On partial parts return commands=[].
 - Return commands=[] normally; the verifier runs policy-approved commands after the edits.
 - New Python files must pass ruff E,F at 88 columns. Do not push, merge, install dependencies,
   bypass hooks, launch deployments, or change secrets.

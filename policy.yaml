@@ -5,6 +5,7 @@
 version: 1
 builder_max_turns: 40
 builder_max_output_tokens: 16000
+verify_retries: 3
 per_task_retries: 3
 max_job_attempts: 30
 split_attempts: 4

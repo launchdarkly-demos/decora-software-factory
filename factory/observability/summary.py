@@ -13,6 +13,8 @@ def build_summary(job: JobState) -> dict[str, object]:
         "duration_ms": max(0, int((job.updated_at - job.created_at) * 1000)),
         "tokens": job.usage.model_dump(),
         "retries": dict(job.retries),
+        "verify_retries_used": job.verify_retries_used,
+        "verification_task_routes": dict(job.verification_task_routes),
         "task_retries": dict(job.task_retries),
         "task_split_attempts": dict(job.task_split_attempts),
         "builder_calls": job.builder_calls,

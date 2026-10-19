@@ -1,7 +1,9 @@
 """Task selection and file ownership shared by the machine and harnesses."""
 from __future__ import annotations
 
+import ast
 import re
+from pathlib import Path
 
 from factory.errors import FactoryError
 from factory.models import JobState, PlanTask
@@ -16,6 +18,8 @@ def tasks(job: JobState) -> list[PlanTask]:
         job.plan.tasks = [PlanTask(id='T1', description=job.plan.summary,
                                    files=list(job.plan.files),
                                    acceptance=job.feature.acceptance or job.plan.steps)]
+    for task in job.plan.tasks:
+        job.task_original_files.setdefault(task.id, list(task.files))
     return job.plan.tasks
 
 
@@ -33,7 +37,7 @@ def current_task(job: JobState) -> PlanTask | None:
     return None
 
 
-def reopen_task(job: JobState, feedback: str) -> PlanTask:
+def reopen_task(job: JobState, feedback: str, tools: ToolLayer | None = None) -> PlanTask:
     queue = tasks(job)
     # Prefer paths in failure output, including pytest's path::test_name notation.
     failure_output = '\n'.join(line for line in feedback.splitlines() if not line.startswith('$ '))
@@ -48,8 +52,29 @@ def reopen_task(job: JobState, feedback: str) -> PlanTask:
             mentioned.update(name.removeprefix('./') for name in re.findall(pattern, line))
     if not mentioned:
         mentioned = {name.removeprefix('./') for name in re.findall(r'[\w./-]+\.[A-Za-z0-9]+', failure_output)}
+    modules: set[str] = set()
+    if tools is not None:
+        # Traceback order runs from caller to the deepest frame. Prefer the last
+        # non-test frame over imports; assertion-only tracebacks rely on imports.
+        frames = re.findall(r'(?:File ["\']([^"\']+)["\'], line \d+|'
+                            r'(?:^|\n)([\w./-]+\.py):\d+)', failure_output)
+        for frame in reversed(frames):
+            path = (frame[0] or frame[1]).removeprefix('./')
+            if not _is_test(path) and _repo_file(tools, path):
+                modules = {path}
+                break
+        if not modules:
+            for path in sorted(mentioned):
+                if _is_test(path) and _repo_file(tools, path):
+                    modules.update(_imported_modules(tools, path))
     owner = next((task for task in reversed(queue)
-                  if mentioned.intersection(task.files)), queue[-1])
+                  if modules.intersection(job.task_original_files[task.id])), None)
+    if owner is None:
+        owner = next((task for task in reversed(queue)
+                      if mentioned.intersection(job.task_original_files[task.id])), queue[-1])
+    for path in sorted(modules):
+        if path not in owner.files:
+            owner.files.append(path)
     job.current_task_id = owner.id
     if owner.id in job.completed_task_ids:
         job.completed_task_ids.remove(owner.id)
@@ -64,6 +89,53 @@ def reopen_task(job: JobState, feedback: str) -> PlanTask:
                     job.completed_task_ids.remove(task.id)
     job.govern_feedback = feedback
     return owner
+
+
+def _is_test(path: str) -> bool:
+    file = Path(path)
+    return any(part in {'tests', 'test'} for part in file.parts) or (
+        file.name.startswith('test_') or file.name.endswith('_test.py'))
+
+
+def _repo_file(tools: ToolLayer, path: str) -> bool:
+    try:
+        return tools._resolve(path).is_file()
+    except FactoryError:
+        return False
+
+
+def _imported_modules(tools: ToolLayer, path: str) -> set[str]:
+    try:
+        tree = ast.parse(tools.read(path))
+    except (SyntaxError, FactoryError):
+        return set()
+    modules: set[str] = set()
+
+    def resolve(name: str) -> None:
+        if not name:
+            return
+        relative = name.replace('.', '/')
+        for prefix in ('', 'src/'):
+            for candidate in (prefix + relative + '.py', prefix + relative + '/__init__.py'):
+                if not _is_test(candidate) and _repo_file(tools, candidate):
+                    modules.add(candidate)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                resolve(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ''
+            if node.level:
+                parts = list(Path(path).parent.parts)
+                if node.level > len(parts):
+                    continue
+                base = '.'.join([*parts[:len(parts) - node.level + 1], *([base] if base else [])])
+            resolve(base)
+            for alias in node.names:
+                if alias.name != '*':
+                    resolve('.'.join(filter(None, [base, alias.name])))
+    return modules
 
 
 def missing_file_feedback(job: JobState, path: str) -> str:

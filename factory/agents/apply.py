@@ -7,6 +7,7 @@ from factory.agents.staging import prepare_staged
 from factory.errors import FactoryError, GovernanceError, SafetyError
 from factory.models import BuildProposal, BuildResult, JobState
 from factory.task_queue import current_task
+from factory.tools.anchors import anchor_span
 from factory.tools.layer import ToolLayer, _anchor_error
 from factory.tools.safety import check_content
 
@@ -24,6 +25,7 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
                            "`task_complete=true` if the task is already done at this checkpoint.")
     staged: dict[str, str | None] = {}
     modes: dict[str, int] = {}
+    anchor_fallbacks: list[str] = []
     previous_edits: dict[str, object] = {}
 
     def current(rel: str) -> str:
@@ -75,12 +77,13 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
             elif edit.kind == "prepend":
                 staged[edit.path] = edit.new + text
             else:
-                count = text.count(edit.old) if edit.old else 0
-                if count != 1:
-                    raise FactoryError(_anchor_error(edit.path, text, edit.old, count))
-                replacement = (edit.old + edit.new if edit.kind == "insert_after" else
-                               edit.new + edit.old if edit.kind == "insert_before" else edit.new)
-                staged[edit.path] = text.replace(edit.old, replacement, 1)
+                start, end, fallback = anchor_span(edit.path, text, edit.old)
+                original_anchor = text[start:end]
+                replacement = (original_anchor + edit.new if edit.kind == "insert_after" else
+                               edit.new + original_anchor if edit.kind == "insert_before" else edit.new)
+                staged[edit.path] = text[:start] + replacement + text[end:]
+                if fallback:
+                    anchor_fallbacks.append(f"Anchor fallback used: {edit.path} original span [{start}:{end}]")
         previous_edits[edit.path] = edit
         if edit.kind == "move":
             previous_edits[edit.destination] = edit
@@ -122,31 +125,23 @@ def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> 
             job.task_file_calls.setdefault(task.id, {})[rel] = job.builder_calls
         if task is not None and rel not in task.files:
             task.files.append(rel)
+            job.task_original_files[task.id].append(rel)
         if staged_text is None and rel not in job.deleted_files:
             job.deleted_files.append(rel)
         elif staged_text is not None and rel in job.deleted_files:
             job.deleted_files.remove(rel)
-    correction = None
-    try:
-        for command in proposal.commands:
-            report = tools.run(command)
-            if not report.passed:
-                raise FactoryError(report.output.strip() or "command failed")
-    except GovernanceError:
-        raise
-    except FactoryError as exc:
-        # Applied files are a checkpoint even when a quick command fails.
-        # The next call repairs committed source rather than inheriting unrecorded edits.
-        correction = str(exc)
     paths = [rel for rel, text in staged.items() if text is not None or originals[rel] is not None]
     task_id = task.id if task else "T1"
     part = len(job.checkpoint_shas.get(task_id, [])) + 1
     message = f"checkpoint {task_id}/{part}\n\n{proposal.commit_message}"
+    if anchor_fallbacks:
+        message += "\n\n" + "\n".join(anchor_fallbacks)
     sha = tools.commit(message, paths) if paths else tools.head_sha()
     changed = tools.changed_files(job.worktree.base_sha)
     return BuildResult(
         task_complete=proposal.task_complete,
-        correction=correction,
+        anchor_fallbacks=anchor_fallbacks,
+        quick_test_commands=proposal.commands,
         commit=sha,
         changed_files=changed,
         summary=proposal.summary,

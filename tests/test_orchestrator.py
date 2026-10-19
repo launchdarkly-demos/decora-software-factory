@@ -35,7 +35,7 @@ def test_verify_failure_returns_to_the_builder_then_passes(tmp_path: Path) -> No
     job = make_factory(tmp_path, repo, harness, verifier=verifier).run(feature())
 
     assert job.stage == Stage.DONE
-    assert job.task_retries["T1"] == 1
+    assert job.verify_retries_used == 1
     assert len(job.builds) == 2
     assert job.pr is not None and job.pr.dry_run
     assert job.pr.url is None
@@ -48,7 +48,7 @@ def test_verify_retries_exhausted_fails_without_a_pr(tmp_path: Path) -> None:
 
     assert job.stage == Stage.FAILED
     assert job.pr is None
-    assert "exhausted 3 retries" in (job.error or "")
+    assert "E22: Job exhausted verify_retries (3)" in (job.error or "")
     assert len(job.verify_runs) == 4
 
 
@@ -58,7 +58,8 @@ def test_ambiguous_verification_returns_to_builder(tmp_path: Path) -> None:
     job = make_factory(tmp_path, repo, ScriptedHarness([low_plan()]), verifier=verifier).run(feature())
 
     assert job.stage == Stage.DONE
-    assert job.task_retries == {"T1": 1}
+    assert job.task_retries == {}
+    assert job.verify_retries_used == 1
     assert len(job.verify_runs) == 2
 
 
@@ -197,6 +198,7 @@ def test_bad_edit_returns_to_the_builder(tmp_path: Path) -> None:
 
     assert job.stage == Stage.DONE
     assert job.task_retries["T1"] == 1
+    assert job.verify_retries_used == 0
     assert job.pr is not None
 
 
@@ -263,7 +265,7 @@ def test_room_mood_demo_loop_on_a_worktree(tmp_path: Path) -> None:
     body = Path(job.pr.body_path).read_text() if job.pr else ""
 
     assert job.stage == Stage.DONE
-    assert job.task_retries["T1"] == 1
+    assert job.verify_retries_used == 1
     assert len(job.builds) == 2
     assert "FLAG_DEFAULT = True" in first
     assert "FLAG_DEFAULT = False" in diff

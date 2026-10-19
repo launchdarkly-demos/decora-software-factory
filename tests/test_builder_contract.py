@@ -161,7 +161,9 @@ def test_policy_context_budget_prioritizes_first_task_file(checkpoint):
 def test_e18_retries_three_times_with_backoff_without_task_charge(tmp_path, monkeypatch):
     repo = init_repo(tmp_path / 'repo')
     delays, calls = [], []
-    monkeypatch.setattr('factory.orchestrator.machine.time.sleep', delays.append)
+    # Scope the spy to the machine; patching the shared time module also records
+    # subprocess.wait's polling sleeps, making this assertion timing-dependent.
+    monkeypatch.setattr('factory.orchestrator.machine.time', SimpleNamespace(sleep=delays.append))
 
     def build(job, tools):
         calls.append(job.current_task_id)
@@ -303,6 +305,7 @@ def test_approved_policy_budget_defaults():
     from factory.governance.policy import Policy
 
     rules = Policy()
+    assert rules.verify_retries == 3
     assert (rules.builder_max_output_tokens, rules.builder_max_turns) == (16000, 40)
     assert (rules.per_task_retries, rules.split_attempts, rules.max_job_attempts) == (3, 4, 30)
     assert (rules.whole_file_limit, rules.excerpt_budget) == (64000, 160000)

@@ -152,9 +152,10 @@ def _anchor_error(rel: str, text: str, old: str, count: int) -> str:
             offset += len(old)
         return (f"{rel}: anchor matched {count} times; line numbers: {', '.join(positions)}. "
                 "Extend the anchor until it's unique.")
-    anchor_lines = old.splitlines() or [old]
-    ranked = sorted(enumerate(text.splitlines(), 1), key=lambda pair: (
+    anchor_lines = old.split("\n") or [old]
+    # splitlines() silently eats controls such as \x1c and \x85; keep them visible.
+    ranked = sorted(enumerate(text.split("\n"), 1), key=lambda pair: (
         -max(difflib.SequenceMatcher(None, line, pair[1]).ratio() for line in anchor_lines), pair[0]))[:3]
-    nearest = "\n".join(f"{number}: {line}" for number, line in ranked)
+    nearest = "\n".join(f"{number}: {line.encode('unicode_escape').decode('ascii')}" for number, line in ranked)
     return (f"{rel}: anchor matched 0 times. Anchor (first 200 characters): {old[:200]!r}\n"
             f"Closest matching lines:\n{nearest}\nAnchors must occur exactly once in the current file.")

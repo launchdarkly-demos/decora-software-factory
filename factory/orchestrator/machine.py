@@ -16,7 +16,7 @@ from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import Policy, review_plan, review_ship
 from factory.harness.base import AgentHarness
 from factory.launchdarkly.flags import LaunchDarklyService
-from factory.models import JobEvent, JobState, Stage
+from factory.models import JobEvent, JobState, Stage, VerifyResult
 from factory.observability.summary import build_summary
 from factory.observability.trace import JsonLog, Tracer
 from factory.orchestrator.graph import COMPONENTS, assert_legal
@@ -235,6 +235,7 @@ class Factory:
         job.plan = plan
         job.current_task_id = None
         job.completed_task_ids.clear()
+        job.task_original_files.clear()
         job.task_summaries.clear()
         self._write_model(job, "implementation_plan.json", plan)
         return Transition(stage=Stage.GOVERN_PLAN, detail=f"recipe {plan.recipe} risk {plan.risk}")
@@ -316,6 +317,8 @@ class Factory:
         job.task_summaries[task.id] = result.summary[:600]
         self._write_model(job, "build.json", result)
         self._write_model(job, "implementation_plan.json", job.plan)
+        for fallback in result.anchor_fallbacks:
+            self._emit(job, "execution", fallback, checkpoint=result.commit)
         if isinstance(self.execution, PortableWorkspace) and job.worktree is not None:
             self.execution.checkpoint(job.worktree)
         # Save applied parts even if a quick check fails or the task needs more calls.
@@ -332,14 +335,46 @@ class Factory:
         missing = [path for path in task.files if path not in job.deleted_files and not tools._resolve(path).is_file()]
         if missing:
             return self._task_correction(job, "\n".join(missing_file_feedback(job, path) for path in missing))
-        if task.quick_test_targets:
-            quick = self.verifier.run_quick(job, tools, task.quick_test_targets)
+        if task.quick_test_targets or result.quick_test_commands:
+            reports = [tools.run(command) for command in result.quick_test_commands]
+            if task.quick_test_targets:
+                targeted = self.verifier.run_quick(job, tools, task.quick_test_targets)
+                reports.extend(targeted.commands)
+                # Scripted verifiers can return actionable text without commands.
+                if not reports:
+                    quick = targeted
+                else:
+                    quick = VerifyResult(passed=all(report.passed for report in reports), commands=reports,
+                                         classification="test", actionable="")
+            else:
+                quick = VerifyResult(passed=all(report.passed for report in reports), commands=reports,
+                                     classification="test", actionable="")
             job.quick_verify_runs.setdefault(task.id, []).append(quick)
-            if not quick.passed and job.task_retries.get(task.id, 0) < self.policy.per_task_retries:
-                ids = list(dict.fromkeys(re.findall(r"(?:FAILED|ERROR)\s+([^\s]+)", quick.actionable)))
-                feedback = "Failing test ids: " + ", ".join(ids) + "\n"
-                feedback += "\n".join(quick.actionable.splitlines()[-60:])
-                return self._task_correction(job, feedback)
+            if not quick.passed:
+                output = "\n".join(report.output for report in quick.commands if not report.passed)
+                feedback = output or quick.actionable
+                if any(report.exit_code == 5 for report in quick.commands):
+                    feedback = ("No tests collected (pytest exit 5) in "
+                                + ", ".join(task.quick_test_targets or [" ".join(r.argv) for r in reports])
+                                + "\n" + feedback)
+                # The completed reporting task remains checkpointed when a module
+                # owner must repair the defect. reopen_task handles touched dependents.
+                previously_done = list(job.completed_task_ids)
+                if task.id not in job.completed_task_ids:
+                    job.completed_task_ids.append(task.id)
+                no_tests = any(report.exit_code == 5 for report in quick.commands)
+                owner = reopen_task(job, feedback, None if no_tests else tools)
+                if job.task_retries.get(owner.id, 0) < self.policy.per_task_retries:
+                    ids = list(dict.fromkeys(re.findall(r"(?:FAILED|ERROR)\s+([^\s]+)", feedback)))
+                    detail = ("E13: Failing test ids: " + ", ".join(ids) + "\n"
+                              + "\n".join(feedback.splitlines()[-60:]))
+                    # Always retain the named exit-5 target and test IDs.
+                    if any(report.exit_code == 5 for report in quick.commands):
+                        detail = feedback.splitlines()[0] + "\n" + detail
+                    return self._task_correction(job, detail)
+                # Advisory: do not reopen tasks when the quick budget is spent.
+                job.completed_task_ids = previously_done
+                self._emit(job, "verification", f"E13 advisory for {owner.id}: {feedback}")
         if task.id not in job.completed_task_ids:
             job.completed_task_ids.append(task.id)
         job.current_task_id = None
@@ -379,12 +414,19 @@ class Factory:
                    if path not in job.deleted_files and not tools._resolve(path).is_file()] if job.plan else []
         if missing:
             feedback = missing_file_feedback(job, missing[0])
-            reopen_task(job, missing[0])
+            owner = reopen_task(job, missing[0], tools)
         else:
             output = "\n".join(report.output for report in result.commands if not report.passed)
-            owner = reopen_task(job, output or result.actionable)
+            owner = reopen_task(job, output or result.actionable, tools)
             feedback = verification_feedback(owner, output or result.actionable, tools)
-        return self._task_correction(job, feedback)
+        if job.verify_retries_used >= self.policy.verify_retries:
+            detail = (f"E22: Job exhausted verify_retries ({self.policy.verify_retries}); "
+                      f"last verification failure: {feedback}")
+            return Transition(stage=Stage.FAILED, detail=detail, error=detail)
+        job.verify_retries_used += 1
+        job.verification_task_routes[owner.id] = job.verification_task_routes.get(owner.id, 0) + 1
+        job.govern_feedback = "E15: " + feedback
+        return Transition(stage=Stage.BUILD, detail=job.govern_feedback)
 
     def _ensure_flag(self, job: JobState) -> Transition:
         try:

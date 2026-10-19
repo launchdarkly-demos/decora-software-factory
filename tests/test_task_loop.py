@@ -151,7 +151,8 @@ def test_full_failure_routes_to_owning_task_without_replaying_other_tasks(tmp_pa
                        verifier=ScriptedVerifier([failed_verify(failure), passed_verify()])).run(feature())
     assert job.stage == Stage.DONE
     assert seen == ['T0', 'T1', 'T0']
-    assert job.task_retries == {'T0': 1}
+    assert job.task_retries == {}
+    assert job.verification_task_routes == {'T0': 1}
     assert len(job.verify_runs) == 2
 
 

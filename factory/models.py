@@ -122,6 +122,8 @@ class BuildProposal(BaseModel):
 
 
 class BuildResult(BaseModel):
+    quick_test_commands: list[list[str]] = Field(default_factory=list)
+    anchor_fallbacks: list[str] = Field(default_factory=list)
     task_complete: bool = True
     correction: str | None = None
     commit: str
@@ -234,6 +236,9 @@ class JobState(BaseModel):
     checkpoint_shas: dict[str, list[str]] = Field(default_factory=dict)
     task_summaries: dict[str, str] = Field(default_factory=dict)
     task_retries: dict[str, int] = Field(default_factory=dict)
+    verify_retries_used: int = 0
+    verification_task_routes: dict[str, int] = Field(default_factory=dict)
+    task_original_files: dict[str, list[str]] = Field(default_factory=dict)
     task_split_attempts: dict[str, int] = Field(default_factory=dict)
     builder_calls: int = 0
     completed_builder_calls: int = 0

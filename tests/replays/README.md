@@ -40,3 +40,23 @@ fixtures in `test_replays.py`:
 - 11: watcher comments preserve a non-default address/namespace; retrying the
   original issue creates `-r1`, a separate status comment, a ledger receipt and
   a second completed mock run with a persisted draft PR record.
+
+#22 adds `test_issue22_replays.py`, acceptance replays 12–16:
+
+- 12 routes a tests-only task's assertion failures to the imported migration module's owner.
+- 13 spends all three quick retries, then fixes a full-verification failure using only
+  the independent verification budget. Separate cases exhaust budgets 0, 1 and 3 with E22.
+- 14 replaces a mangled control anchor against an original Unicode arrow and checks
+  fallback records in the checkpoint and event log. Additional cases prove NFC,
+  original-span preservation for inserts, escaped E5, and atomic ambiguous rejection.
+- 15 suppresses quick targets and proposal commands on partial parts; completion with
+  pytest exit 5 produces a correction naming the test file.
+- `replay_r1` uses `issue_22_r1_plan.json`, copied from the original
+  `job-gh-5873513712-r1/implementation_plan.json` receipt. Small deterministic room,
+  store and migration fixtures reproduce the six-task sequence and two migration
+  defects. The high-risk gate is approved in the harness; task 6's partial no-tests
+  part is checkpointed without running pytest; the completed task's failing tests
+  route to task 5, whose mangled-arrow repair reaches DONE and a persisted draft record.
+  LaunchDarkly is offline/disabled and publication is local; no remote side effects.
+
+Run these with `.venv/bin/python -m pytest -q tests/test_issue22_replays.py`.

@@ -73,6 +73,7 @@ class Policy(BaseModel):
     version: int = 1
     builder_max_turns: int = Field(default=40, gt=0)
     builder_max_output_tokens: int = Field(default=16000, gt=0)
+    verify_retries: int = Field(default=3, ge=0)
     per_task_retries: int = Field(default=3, ge=0)
     max_job_attempts: int = Field(default=30, gt=0)
     split_attempts: int = Field(default=4, ge=0)

@@ -194,6 +194,9 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
         lines.append(f"- {risk}")
     lines.extend(["", "## Retries", ""])
     lines.append(f"- Builder calls: {job.builder_calls}")
+    lines.append(f"- Full-verification retries: {job.verify_retries_used}")
+    for task_id, count in sorted(job.verification_task_routes.items()):
+        lines.append(f"- Task {task_id} verification routes: {count}")
     for task in plan.tasks if plan else []:
         lines.append(f"- Task {task.id} corrections: {job.task_retries.get(task.id, 0)}")
         lines.append(f"- Task {task.id} split continuations: {job.task_split_attempts.get(task.id, 0)}")

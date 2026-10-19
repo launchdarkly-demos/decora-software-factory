@@ -62,8 +62,8 @@ Read actions are tools the Builder calls during its turn. Write actions are entr
 |---|---|---|
 | `create` (`write` on a missing path) | `path`, `content` | Path doesn't exist yet in the staged state |
 | `write` (full replacement) | `path`, `content` | Path exists. It replaces the whole file. Allowed for any file in the plan or added automatically |
-| `replace` | `path`, `old` (non-empty), `new` | `old` occurs **exactly once** in the staged text |
-| `insert_after` / `insert_before` | `path`, `old` (non-empty), `new` | `old` occurs exactly once; `new` goes right after or before it |
+| `replace` | `path`, `old` (non-empty), `new` | `old` has exactly one match under the anchor rule below |
+| `insert_after` / `insert_before` | `path`, `old` (non-empty), `new` | `old` has exactly one match under the anchor rule below; `new` goes right after or before the original span |
 | `append` / `prepend` | `path`, `new` | File exists (or is being created earlier in the same proposal) |
 | `delete` | `path` | File exists; the path passes safety checks |
 | `move` | `path`, `new_path` | Source exists, destination doesn't; both paths pass safety checks. The destination is added to the plan automatically |
@@ -89,7 +89,7 @@ All checks run on the fully staged proposal **before any file is written**. If a
 ## 5. Errors
 
 Each error belongs to one of three classes:
-- **Correction**: the same task is retried with the feedback, using 1 of `per_task_retries`, except E15 which uses the independent job-level `verify_retries`.
+- **Correction**: the same task is retried with the feedback, using 1 of `per_task_retries`, except failures reported by full verification (E14/E15), which use the independent job-level `verify_retries`.
 - **Split**: the same task continues from its checkpoint, using 1 of `split_attempts`. A split doesn't cost a retry.
 - **Fatal**: the job ends.
 
@@ -116,7 +116,6 @@ Each error belongs to one of three classes:
 | E19 | Task retries exhausted | **Fatal** for the job | "Task T exhausted N retries; last error: …" |
 | E20 | Job attempt cap reached | **Fatal** | "Job reached max_job_attempts (N)." |
 | E21 | Splits exhausted for a task | After `split_attempts`, each further E1/E2 counts as a correction (E19 applies) | Same text as E1/E2 |
-
 | E22 | Full-verification retry budget exhausted | **Fatal** | "E22: Job exhausted verify_retries (N); last verification failure: …" |
 
 Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies to ordinary Builder corrections; a full-verification failure itself cannot cause E19.
@@ -157,7 +156,7 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 
 **Quick tests.**
 - Run only after a checkpoint reporting `task_complete=true`, on that task's `quick_test_targets`. Never run on partial parts, including proposal commands that are quick tests.
-- Route failures to the module-under-test owner below (E13), using that owner's `per_task_retries`. Exit 5 (no tests collected) is a correction naming the target file.
+- Route failures to the module-under-test owner below (E13), using that owner's `per_task_retries`. Exit 5 (no tests collected) is a correction to the test-file owner naming the target file; there is no failing test from which to infer a module defect.
 - If the owning task's retries are spent, record the failure as advisory and continue to full verification.
 
 **Full verification.**
@@ -272,6 +271,8 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 
 ## 12. Change list status (baseline 989c214)
 
+Items 1–13 describe the baseline implementation changes already delivered on this branch; remaining audit limitations are tracked in [builder-spec-traceability.md](builder-spec-traceability.md).
+
 1. **Anchor pre-check:** remove the "anchor was not read in this attempt" check in `harness/openai_agents.py` and rely on the apply-time check (§3). Add the closest-lines detail to E5 and E6.
 2. **Parse first:** run `ast.parse` (and parse planned JSON, YAML and TOML) on every staged file before writing in `agents/apply.py`, giving E9 with context. Strip ANSI codes from formatter output (E10).
 3. **Size settings in policy:** move `WHOLE_FILE_THRESHOLD` and `EXCERPT_BUDGET` into policy as `whole_file_limit: 64000` and `excerpt_budget: 160000`. Label section line ranges in metadata (already done) and put the task's files first.
@@ -286,7 +287,7 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 12. **Replays:** add replays 6, 7, 8, 10 and 11 from §11; replays 1 to 5 and 9 exist already.
 13. **Docs:** replace `docs/general-planning.md`'s Builder section with a pointer to this spec.
 
-14. **#22 approved, implementation pending:** module-under-test routing and repair scope/context; independent `verify_retries: 3` with E22; unique normalized anchor fallback with checkpoint logging and escaped E5; completion-only quick tests and named exit-5 corrections. Replays 12–16 are required before marking implemented.
+14. **#22 implemented and replayed:** module-under-test routing and repair scope/context; independent `verify_retries: 3` with E22; unique normalized anchor fallback with checkpoint logging and escaped E5; completion-only quick tests and named exit-5 corrections. Replays 12–16 reach DONE with local draft PR records; E22 exhaustion and ambiguous-anchor atomic rejection have explicit regression coverage.
 
 ## 13. Recommendation: large-file handling
 

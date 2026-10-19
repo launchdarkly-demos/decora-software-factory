@@ -367,7 +367,9 @@ def test_replay_08_verification_routes_to_task_2_file(tmp_path):
     job = make_factory(tmp_path, repo, harness, policy=rules).run(feature(acceptance=['conversion']))
     assert_draft_done(job)
     assert harness.calls == ['T1', 'T2', 'T5', 'T2']
-    assert job.task_retries == {'T2': 1}
+    assert job.task_retries == {}
+    assert job.verify_retries_used == 1
+    assert job.verification_task_routes == {'T2': 1}
     assert [run.passed for run in job.verify_runs] == [False, True]
 
 

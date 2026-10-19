@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s #22, #23, #24, #25, #26, #27, #28, #29 and #34 rules (Oct 19, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18), `job-gh-5913682653` (Oct 18) and org `job-gh-5918876477` (Oct 19).
+Status: approved, including Alexis’s #22, #23, #24, #25, #26, #27, #28, #29, #34 and #35 rules (Oct 19, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18), `job-gh-5913682653` (Oct 18) and org `job-gh-5918876477` (Oct 19).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -39,10 +39,18 @@ Every Builder call, whether first, a split continuation or a correction, must re
 4. **The last correction**, if any, exactly as defined in §5.
 5. **Flag context**: the key, its default (off), and whether a flag is required.
 6. **Limits for this call**: how many output tokens and turns it has left, so the Builder can size its answer.
+7. **Request context** (`request_context`, #35 / B1): a bounded object with feature title, summary, acceptance and hints, plus plan summary, steps and assumptions. Cap total serialized size deterministically (default 6000 characters). When over the cap, truncate the longest fields first and append a visible `[truncated]` marker; never drop `plan.steps` entirely. BUILDER_INSTRUCTIONS must treat `request_context` as reference detail for the current task: concrete items it names that fall within the task's files and acceptance must be implemented, without expanding scope beyond the task's files.
 
 Every model payload (Planner, Builder, Reviewer and structured read-tool results) must use `json.dumps(..., ensure_ascii=False)` so source characters remain verbatim.
 
 The context is **for convenience, not a gate**. The Builder can read anything else it needs with the read tools (§3), and nothing it proposes is rejected for lack of having "seen" it.
+
+### Builder / Planner / Reviewer contract (#35)
+
+1. **B1 — Builder `request_context`.** Every Builder payload includes the bounded `request_context` object from §2.7. Instructions: use it as reference detail for the CURRENT task; implement concrete items it names that fall within the task's files and acceptance; never expand scope beyond the task's files.
+2. **B2 — Planner concrete items.** When the request (including `feature.hints`) or the plan steps name concrete items (files, test suites, keys, values, endpoints, commands), PLANNER_INSTRUCTIONS must copy them verbatim into the acceptance of the task that owns them. Do not summarize them as "all X".
+3. **B3 — Reviewer concrete items.** In addition to acceptance criteria, REVIEWER_INSTRUCTIONS must check every concrete item named in `plan.steps` and `feature.hints` that falls within the change's scope. A missing item in the diff is a failed check; the verdict must request changes and cite the missing item.
+4. **B4 — Policy unchanged.** No change to flags/rollout behavior, LaunchDarkly handling, or org/personal policy behavior.
 
 ## 3. Action set
 
@@ -310,6 +318,7 @@ The factory may serve more than one checkout at once. Behavior is **policy-drive
 | r8 / `job-gh-5873513712-r8` | Policy-fixed key `decora-room-home-migration` treated as issue-supplied existing flag; GET 404 paused ensure_flag after verification | §8 ensure_flag: only intake `feature.flag_key` must pre-exist; fixed/planner keys are created when missing; §11 replay_r8 |
 | Org / Release Autopilot | Factory planned/audited/provisioned flags on a repo where LaunchDarkly Release Autopilot already owns them | Multiple targets + `flags.management=external`; §11 org-target replay |
 | #34 / org `job-gh-5918876477` | Unrecognized `## Problem` (five missing suites) dropped at intake; `---` footer leaked into `change_type` so `change_class` was unset | §9 R1–R4 issue body parsing; §11 issue34 intake replay |
+| #35 / org `job-gh-5918876477-r1` (run 2) | Builder payload lacked feature/plan detail so only 6 of 11 named offline suites were written; reviewer had plan but checked only acceptance bullets | §2.7 / B1 `request_context`; B2 planner verbatim concrete items; B3 reviewer checks `plan.steps`/`feature.hints`; §11 issue35 replay |
 
 ## 11. Acceptance criteria
 
@@ -346,6 +355,8 @@ The factory may serve more than one checkout at once. Behavior is **policy-drive
 **Org target / `flags.management=external`.** Replay an org job (mock harness; plan with a planner `flag_key` and a `provision_flag`-like task) under `policy.decora-org.yaml`: no flag task, `flag_key` stripped, no audit, `ensure_flag` skipped with zero LaunchDarkly client calls even in live mode, job reaches DONE with a draft PR body mentioning Release Autopilot. The same plan under `policy.decora.yaml` still requires and inserts the flag task and audits default-off. Cover policy validation errors, `issue_triggers` (allowlisted author without label once; non-allowlisted ignored; label by non-allowlisted collaborator ignored when `labelers` set; allowlisted writer triggers; bot `[bot]` matching; watcher without `--policy` unchanged), and job-id non-collision across targets.
 
 **#34 / issue intake.** Replay `tests/fixtures/org_issue3_r1_body.md` (org live run 1 body): a hint contains `Problem:` and all five suite names; `change_class == docs_only`; `change_type` has neither `---` nor the footer sentence; footer text appears as a `Footer:` hint; acceptance has four items. Cover unknown-section order, known-section stability, Context-without-duplication, fenced `---` not breaking sections, and planner/reviewer payloads that include the Problem text.
+
+**#35 / Builder request context.** Replay `tests/fixtures/org_issue3_r2_job.json` (org live run 2 feature+plan): the Builder payload for that run's task includes `request_context` whose plan steps name all of `test_api_project.py`, `test_board.py`, `test_events.py`, `test_flinch_gate.py`, `test_request_errors.py`, and the `Problem:` hint. Cap holds for a huge feature/plan (`request_context` ≤ cap, steps still present, `[truncated]` marker present). Planner/Builder/Reviewer instructions contain the B1–B3 rules. Personal-target flag/policy behavior is unchanged.
 
 **Live definition of done** (decor-agent, real model, `--ld live --push`):
 - A maintainer labels an issue with a high-risk migration plan (the #8/#12 room-home migration). The watcher starts the job without anyone typing a job ID.

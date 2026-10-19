@@ -1,0 +1,119 @@
+{
+ "id": "job-gh-5918876477-r1",
+ "feature": {
+  "acceptance": [
+   "The README Tests section uses `python -m pytest -q` with the offline suites listed explicitly. Include `test_llm.py` (offline). Keep `test_agent.py` (live, needs `ANTHROPIC_API_KEY`) out of the offline command.",
+   "It notes `pip install pytest` (README only; don't change `requirements.txt`).",
+   "The live-routing example (`LOG_LEVEL=WARNING python test_agent.py`) stays as it is.",
+   "Change only `README.md`. No code, API, UI, or dependency changes."
+  ],
+  "change_class": "docs_only",
+  "change_type": "docs_only, low risk.",
+  "demo_fail_first_build": false,
+  "flag_default": false,
+  "flag_key": null,
+  "hints": [
+   "Problem: `README.md` → **Tests** says:\n\n```bash\npython test_catalog.py test_store.py test_mcp_catalog.py test_mcp_project.py test_harness.py\n```\n\n`python` runs only the first file (`test_catalog.py`) and passes the rest as arguments, so most suites never run. The list also leaves out the newer offline suites in the repo root: `test_api_project.py`, `test_board.py`, `test_events.py`, `test_flinch_gate.py`, `test_request_errors.py`, `test_llm.py`. pytest isn't in `requirements.txt`, so the README should say how to get it.",
+   "Footer: This is a factory test issue for the Decora software factory's org target."
+  ],
+  "id": "factory-test-readme-make-the-tests-command-actually-run-all-offline-suites",
+  "issue_url": "https://github.com/launchdarkly-demos/decor-agent/issues/3",
+  "labels": [
+   "factory:retry"
+  ],
+  "rollout": "",
+  "scope": "",
+  "source": "github_issue",
+  "summary": "Fix the README \"Tests\" section so its commands actually run the offline test suites.",
+  "title": "[factory test] README: make the Tests command actually run all offline suites",
+  "user_facing": false,
+  "verification": ""
+ },
+ "plan": {
+  "ambiguous": false,
+  "assumptions": [
+   "All listed offline test suites (`test_catalog.py`, `test_store.py`, `test_mcp_catalog.py`, `test_mcp_project.py`, `test_harness.py`, `test_api_project.py`, `test_board.py`, `test_events.py`, `test_flinch_gate.py`, `test_request_errors.py`, `test_llm.py`) do not require live keys or external API access, except for `test_agent.py`, which is intentionally omitted.",
+   "No other auxiliary scripts or references need modification to satisfy acceptance.",
+   "pytest can be installed via pip as suggested and users will follow the note."
+  ],
+  "change_class": "docs_only",
+  "context_files": [
+   "README.md",
+   "test_catalog.py",
+   "test_store.py",
+   "test_mcp_catalog.py",
+   "test_mcp_project.py",
+   "test_harness.py",
+   "test_api_project.py",
+   "test_board.py",
+   "test_events.py",
+   "test_flinch_gate.py",
+   "test_request_errors.py",
+   "test_llm.py",
+   "test_agent.py"
+  ],
+  "files": [
+   "README.md"
+  ],
+  "flag_default": false,
+  "flag_key": null,
+  "flag_rationale": "",
+  "flag_task_id": null,
+  "guarded_rollout_metric": null,
+  "important_ux_change": false,
+  "large_change": false,
+  "migration_plan": "",
+  "normalization_notes": [
+   "No code, dependency, API, or requirements changes permitted.",
+   "Only `README.md` is editable per acceptance."
+  ],
+  "questions": [],
+  "recipe": "general",
+  "requires_migration": false,
+  "risk": "low",
+  "risks": [
+   "Reader confusion if any stray mentions of old test invocation remain in README; review for clarity.",
+   "No risk to code or environment since only documentation changes occur.",
+   "pytest, not in requirements.txt, is user-installed as stated."
+  ],
+  "steps": [
+   "Read the full current Tests section in README.md. Verify which test files are present and their nature (offline vs live).",
+   "Craft a new README Tests section:",
+   "- Replace the direct `python test_...` invocation with a `python -m pytest -q` command listing all offline test suites explicitly (`test_catalog.py`, `test_store.py`, `test_mcp_catalog.py`, `test_mcp_project.py`, `test_harness.py`, `test_api_project.py`, `test_board.py`, `test_events.py`, `test_flinch_gate.py`, `test_request_errors.py`, `test_llm.py`).",
+   "- Explicitly exclude `test_agent.py` (live test requiring ANTHROPIC_API_KEY).",
+   "- Add a note above the test command describing how to install pytest (with `pip install pytest`).",
+   "- Keep the live CLAUDE routing example as-is and make it clear it is for live (not offline) tests.",
+   "Review the rest of the README for stray mentions of the old test invocation or references that could confuse readers about which tests are offline vs live. Fix only if necessary to satisfy the acceptance criteria."
+  ],
+  "summary": "Update the README's Tests section so the documented command uses pytest to actually run all offline test suites (excluding live-only tests). Add a clear pytest install instruction, and ensure nothing but README.md changes.",
+  "tasks": [
+   {
+    "acceptance": [
+     "The README Tests section uses `python -m pytest -q` with the offline suites listed explicitly. Includes `test_llm.py` (offline). Omits `test_agent.py` (live, needs ANTHROPIC_API_KEY) from the offline command.",
+     "Mentions `pip install pytest` (README only; requirements.txt is not changed).",
+     "The live-routing example (`LOG_LEVEL=WARNING python test_agent.py`) stays unchanged.",
+     "No code, API, UI, or requirements.txt changes occur."
+    ],
+    "depends_on": [],
+    "description": "Revise the README Tests section. Ensure the command `python -m pytest -q ...` lists all offline suites (including test_llm.py and all present offline test files), omits test_agent.py, and adds a note for pytest installation via pip. The live test example for test_agent.py remains unchanged.",
+    "files": [
+     "README.md"
+    ],
+    "id": "update_readme_tests_section",
+    "max_test_functions": 6,
+    "quick_test_targets": [],
+    "rewrite_files": [
+     "README.md"
+    ]
+   }
+  ],
+  "test_targets": [],
+  "verification_profiles": []
+ },
+ "completed_task_ids": [
+  "update_readme_tests_section"
+ ],
+ "task_summaries": {
+  "update_readme_tests_section": "Revised the README Tests section to explicitly list all offline test suites in the recommended pytest command. Included a pip install pytest note. Omitted test_agent.py from the offline command and preserved the original live test example for test_agent.py as required."
+ }
+}

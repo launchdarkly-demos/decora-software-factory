@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import math
 import os
@@ -8,6 +9,7 @@ import re
 import time
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -34,6 +36,9 @@ from factory.harness.tokens import charge_provider
 from factory.models import BuildProposal, ImplementationPlan, JobState, RepoContext, ReviewReport
 from factory.task_queue import current_task
 from factory.tools.layer import ToolLayer
+
+REQUEST_CONTEXT_CHAR_CAP = 6000
+_TRUNCATION_MARKER = "[truncated]"
 
 
 class OpenAIAgentsHarness:
@@ -99,29 +104,10 @@ class OpenAIAgentsHarness:
         return ImplementationPlan.model_validate(output)
 
     def build(self, job: JobState, tools: ToolLayer):
-        from agents import Agent
+        from agents import Agent, ModelSettings
 
-        task = current_task(job)
-        if task is None:
-            raise FactoryError("No pending Builder task")
         files = _file_excerpts(job, tools)
-        payload = json.dumps(
-            {
-                "task": task.model_dump(),
-                "limits": {"output_tokens": self.policy.builder_max_output_tokens,
-                           "turns": self.policy.builder_max_turns},
-                "completed_tasks": [{"id": task_id, "summary": job.task_summaries.get(task_id, "")[:600]}
-                                    for task_id in [item.id for item in (job.plan.tasks if job.plan else [])
-                                                    if item.id in job.completed_task_ids]],
-                "files": files,
-                "govern_feedback": job.govern_feedback,
-                "flag_policy": self.policy.flags.model_dump(),
-                "flag_context": {"key": selected_flag_key(job), "default": False,
-                                 "required": flag_required(self.policy, job)},
-            }, ensure_ascii=False
-        )
-        from agents import ModelSettings
-
+        payload = json.dumps(builder_payload(job, files=files, policy=self.policy), ensure_ascii=False)
         agent = Agent(
             name="Builder",
             instructions=BUILDER_INSTRUCTIONS,
@@ -184,6 +170,134 @@ class OpenAIAgentsHarness:
 def _feature_for_model(job: JobState) -> dict[str, object]:
     data = job.feature.model_dump()
     data.pop("demo_fail_first_build", None)
+    return data
+
+
+def builder_payload(
+    job: JobState,
+    *,
+    files: list[dict[str, str]] | None = None,
+    policy: Policy | None = None,
+) -> dict[str, Any]:
+    """Pure Builder model payload (no network). Includes bounded request_context (#35)."""
+    rules = policy or Policy()
+    task = current_task(job)
+    if task is None:
+        raise FactoryError("No pending Builder task")
+    return {
+        "task": task.model_dump(),
+        "limits": {"output_tokens": rules.builder_max_output_tokens, "turns": rules.builder_max_turns},
+        "completed_tasks": [
+            {"id": task_id, "summary": job.task_summaries.get(task_id, "")[:600]}
+            for task_id in [item.id for item in (job.plan.tasks if job.plan else [])
+                            if item.id in job.completed_task_ids]
+        ],
+        "files": list(files or []),
+        "govern_feedback": job.govern_feedback,
+        "flag_policy": rules.flags.model_dump(),
+        "flag_context": {
+            "key": selected_flag_key(job),
+            "default": False,
+            "required": flag_required(rules, job),
+        },
+        "request_context": request_context_for_builder(job),
+    }
+
+
+def request_context_for_builder(
+    job: JobState,
+    *,
+    cap: int = REQUEST_CONTEXT_CHAR_CAP,
+) -> dict[str, Any]:
+    """Bounded feature/plan detail for the Builder (#35 / B1)."""
+    plan = job.plan
+    context = {
+        "feature": {
+            "title": job.feature.title or "",
+            "summary": job.feature.summary or "",
+            "acceptance": list(job.feature.acceptance),
+            "hints": list(job.feature.hints),
+        },
+        "plan": {
+            "summary": (plan.summary if plan else "") or "",
+            "steps": list(plan.steps) if plan else [],
+            "assumptions": list(plan.assumptions) if plan else [],
+        },
+    }
+    return _truncate_request_context(context, cap)
+
+
+def _truncate_request_context(context: dict[str, Any], cap: int) -> dict[str, Any]:
+    """Shrink longest string leaves first until json size ≤ cap; keep plan.steps present."""
+    data = copy.deepcopy(context)
+    marker = _TRUNCATION_MARKER
+    # (section, field, index|None) — index is None for scalar string fields.
+    Leaf = tuple[str, str, int | None]
+
+    def dump_len() -> int:
+        return len(json.dumps(data, ensure_ascii=False))
+
+    def read(leaf: Leaf) -> str:
+        section, field, index = leaf
+        value = data[section][field]
+        return value if index is None else value[index]
+
+    def write(leaf: Leaf, text: str) -> None:
+        section, field, index = leaf
+        if index is None:
+            data[section][field] = text
+        else:
+            data[section][field][index] = text
+
+    def leaves() -> list[tuple[str, Leaf, bool]]:
+        found: list[tuple[str, Leaf, bool]] = []
+        for section, field, is_step in (
+            ("feature", "title", False),
+            ("feature", "summary", False),
+            ("feature", "acceptance", False),
+            ("feature", "hints", False),
+            ("plan", "summary", False),
+            ("plan", "steps", True),
+            ("plan", "assumptions", False),
+        ):
+            value = data[section][field]
+            if isinstance(value, list):
+                for index, item in enumerate(value):
+                    if isinstance(item, str):
+                        found.append((item, (section, field, index), is_step))
+            elif isinstance(value, str):
+                found.append((value, (section, field, None), is_step))
+        return found
+
+    original_step_count = len(data["plan"]["steps"])
+
+    while dump_len() > cap:
+        candidates = leaves()
+        if not candidates:
+            break
+        # Truncate the longest field first (ties: prefer non-step leaves).
+        text, leaf, is_step = max(candidates, key=lambda item: (len(item[0]), not item[2]))
+        if len(text) <= len(marker):
+            shrinkable = [item for item in candidates if len(item[0]) > len(marker)]
+            if not shrinkable:
+                break
+            text, leaf, is_step = max(shrinkable, key=lambda item: (len(item[0]), not item[2]))
+        over = dump_len() - cap
+        keep = max(0, len(text) - max(over, 1) - len(marker))
+        if is_step and original_step_count:
+            other = sum(
+                len(s) for s, other_leaf, step in candidates
+                if step and other_leaf != leaf
+            )
+            if other == 0 and keep == 0:
+                keep = 1  # never erase the last remaining step content
+        new_text = text[:keep] + marker
+        if new_text == text:
+            break
+        write(leaf, new_text)
+
+    if original_step_count and not data["plan"]["steps"]:
+        data["plan"]["steps"] = [marker]
     return data
 
 

@@ -59,7 +59,7 @@ def test_replay_r7(tmp_path):
 def test_base_removal_rejected_with_actionable_feedback_and_restore(tmp_path, kind):
     repo = init_repo(tmp_path / 'repo')
     tools = ToolLayer(repo, policy())
-    source = ''.join(f'base line {i}\n' for i in range(35))
+    source = ''.join(f'base line {i}\n' for i in range(80))
     tools.write('existing.txt', source)
     sha = tools.commit('Base source', ['existing.txt'])
     job = bare_job(tmp_path, plan=low_plan(files=['existing.txt']),
@@ -71,7 +71,7 @@ def test_base_removal_rejected_with_actionable_feedback_and_restore(tmp_path, ki
         apply_proposal(job, tools, proposal([write('new.txt', 'never written\n'),
                                            FileEdit(path='existing.txt', kind=kind, **fields)]))
     feedback = str(error.value)
-    assert '35/35 lines (100%)' in feedback
+    assert '80/80 lines (100%)' in feedback
     assert 'keep existing lines' in feedback and 'needed region' in feedback
     assert 'several smaller replace/insert_* edits' in feedback
     assert 'rewrite_files' not in feedback
@@ -84,7 +84,7 @@ def test_base_removal_rejected_with_actionable_feedback_and_restore(tmp_path, ki
 def test_lines_added_earlier_in_job_are_exempt(tmp_path, addition_position):
     repo = init_repo(tmp_path / 'repo')
     tools = ToolLayer(repo, policy())
-    base = ''.join(f'base line {i}\n' for i in range(35))
+    base = ''.join(f'base line {i}\n' for i in range(80))
     added = ''.join(f'job addition {i}\n' for i in range(80))
     tools.write('existing.txt', base)
     sha = tools.commit('Base source', ['existing.txt'])
@@ -96,7 +96,7 @@ def test_lines_added_earlier_in_job_are_exempt(tmp_path, addition_position):
     assert tools.read('existing.txt') == base
     # Prior additions must not inflate the denominator and permit base destruction.
     apply_proposal(job, tools, proposal([write('existing.txt', current)]))
-    with pytest.raises(DestructiveEditError, match='35/35'):
+    with pytest.raises(DestructiveEditError, match='80/80'):
         apply_proposal(job, tools, proposal([write('existing.txt', added)]))
     assert tools.read('existing.txt') == current
 

@@ -75,7 +75,7 @@ class PlanTask(BaseModel):
     description: str
     files: list[str]
     rewrite_files: list[str] = Field(default_factory=list)
-    max_test_functions: int = Field(default=6, ge=1, le=6)
+    max_test_functions: int = Field(default=6, ge=1)
     quick_test_targets: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     acceptance: list[str] = Field(default_factory=list)
@@ -247,6 +247,9 @@ class JobState(BaseModel):
     checkpoint_shas: dict[str, list[str]] = Field(default_factory=dict)
     task_summaries: dict[str, str] = Field(default_factory=dict)
     task_retries: dict[str, int] = Field(default_factory=dict)
+    failure_test_ids: dict[str, list[str]] = Field(default_factory=dict)
+    failure_test_counts: dict[str, int] = Field(default_factory=dict)
+    progress_retry_streaks: dict[str, int] = Field(default_factory=dict)
     verify_retries_used: int = 0
     verification_task_routes: dict[str, int] = Field(default_factory=dict)
     task_original_files: dict[str, list[str]] = Field(default_factory=dict)

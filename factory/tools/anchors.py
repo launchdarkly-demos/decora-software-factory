@@ -71,6 +71,12 @@ def anchor_span(path: str, text: str, old: str) -> tuple[int, int, bool]:
             lines = ', '.join(str(text.count('\n', 0, start) + 1) for start, _ in matches)
             raise FactoryError(f'{path}: escape-artifact anchor matched {len(matches)} times; '
                                f'line numbers: {lines}. Extend the anchor until it\'s unique.')
+        matches = _whitespace_matches(text, old)
+        if len(matches) == 1:
+            return *matches[0], True
+        if matches:
+            raise FactoryError(f'{path}: whitespace anchor matched {len(matches)} times; '
+                               'Extend the anchor until it is unique.')
         raise FactoryError(_anchor_error(path, text, old, 0))
     return *matches[0], True
 
@@ -93,3 +99,45 @@ def _escape_artifact_matches(text: str, old: str) -> list[tuple[int, int]]:
     # Lookahead retains overlapping candidates so uniqueness cannot be accidental.
     pattern = re.compile('(?=(' + ''.join(parts) + '))')
     return [match.span(1) for match in pattern.finditer(text)]
+
+
+def _whitespace_normalized(text: str) -> tuple[str, list[tuple[int, int]]]:
+    normalized, original_spans = _normalized(text)
+    output: list[str] = []
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    for line in normalized.splitlines(keepends=True):
+        body = line.rstrip('\r\n')
+        tokens = list(re.finditer(r'[^\S\r\n]+|\S+', body))
+        for token in tokens:
+            if token[0].isspace():
+                if token.start() == 0 or token.end() == len(body):
+                    continue
+                output.append(' ')
+                spans.append((original_spans[offset + token.start()][0],
+                              original_spans[offset + token.end() - 1][1]))
+            else:
+                output.extend(token[0])
+                spans.extend(original_spans[offset + token.start():offset + token.end()])
+        if len(body) < len(line):
+            output.append('\n')
+            spans.append((original_spans[offset + len(body)][0],
+                          original_spans[offset + len(line) - 1][1]))
+        offset += len(line)
+    return ''.join(output), spans
+
+
+def _whitespace_matches(text: str, old: str) -> list[tuple[int, int]]:
+    source, spans = _whitespace_normalized(text)
+    needle, _ = _whitespace_normalized(old)
+    if not needle.strip():
+        return []
+    matches = []
+    offset = 0
+    while (index := source.find(needle, offset)) >= 0:
+        end = index + len(needle)
+        if ((index == 0 or spans[index - 1] != spans[index]) and
+                (end == len(spans) or spans[end - 1] != spans[end])):
+            matches.append((spans[index][0], spans[end - 1][1]))
+        offset = index + 1
+    return matches

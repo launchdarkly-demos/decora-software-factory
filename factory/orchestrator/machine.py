@@ -413,17 +413,19 @@ class Factory:
                     job.completed_task_ids.append(task.id)
                 no_tests = any(report.exit_code == 5 for report in quick.commands)
                 owner = reopen_task(job, feedback, None if no_tests else tools)
-                if job.task_retries.get(owner.id, 0) < self.policy.per_task_retries:
-                    ids = list(dict.fromkeys(re.findall(r"(?:FAILED|ERROR)\s+([^\s]+)", feedback)))
-                    detail = ("E13: Failing test ids: " + ", ".join(ids) + "\n"
-                              + "\n".join(feedback.splitlines()[-60:]))
-                    # Always retain the named exit-5 target and test IDs.
-                    if any(report.exit_code == 5 for report in quick.commands):
-                        detail = feedback.splitlines()[0] + "\n" + detail
-                    return self._task_correction(job, detail)
+                ids = list(dict.fromkeys(re.findall(r"(?:FAILED|ERROR)\s+([^\s]+)", feedback)))
+                detail = ("E13: Failing test ids: " + ", ".join(ids) + "\n"
+                          + "\n".join(feedback.splitlines()[-60:]))
+                # Always retain the named exit-5 target and test IDs.
+                if any(report.exit_code == 5 for report in quick.commands):
+                    detail = feedback.splitlines()[0] + "\n" + detail
+                correction = self._task_correction(job, detail, failure_feedback=feedback)
+                if correction.stage != Stage.FAILED:
+                    return correction
                 # Advisory: do not reopen tasks when the quick budget is spent.
                 job.completed_task_ids = previously_done
                 self._emit(job, "verification", f"E13 advisory for {owner.id}: {feedback}")
+        clear_progress(job, task.id, "task")
         if task.id not in job.completed_task_ids:
             job.completed_task_ids.append(task.id)
         job.current_task_id = None
@@ -432,7 +434,8 @@ class Factory:
         return Transition(stage=Stage.BUILD if next_task else Stage.VERIFY,
                           detail=f"checkpointed task {task.id}: {result.summary}")
 
-    def _task_correction(self, job: JobState, feedback: str, *, split: bool = False) -> Transition:
+    def _task_correction(self, job: JobState, feedback: str, *, split: bool = False,
+                         failure_feedback: str | None = None) -> Transition:
         task = current_task(job)
         assert task is not None
         feedback = strip_ansi(feedback)
@@ -443,9 +446,15 @@ class Factory:
                 job.govern_feedback = feedback
             used_splits = job.task_split_attempts.get(task.id, 0)
             job.task_split_attempts[task.id] = used_splits + 1
-            if used_splits < self.policy.split_attempts:
-                return Transition(stage=Stage.BUILD, detail=feedback)
-            # E21: further splits become ordinary corrections after the split allowance.
+            if used_splits >= self.policy.split_attempts:
+                feedback += (" Split allowance exhausted: return only one small region or one test now; "
+                             "use append/insert.")
+                job.govern_feedback = feedback
+            return Transition(stage=Stage.BUILD, detail=feedback)
+        if progress_retry_credit(job, task.id, failure_feedback or feedback, "task"):
+            feedback += f"\nProgress retry uncharged ({job.progress_retry_streaks['task:' + task.id]}/3)."
+            job.govern_feedback = feedback
+            return Transition(stage=Stage.BUILD, detail=feedback)
         used = job.task_retries.get(task.id, 0)
         if used >= self.policy.per_task_retries:
             detail = f"Task {task.id} exhausted {self.policy.per_task_retries} retries; last error: {feedback}"
@@ -462,6 +471,8 @@ class Factory:
             diff_path = self._run_dir(job) / f"verify-{len(job.verify_runs)}.diff"
             diff_path.write_text(tools.diff(job.worktree.base_sha))
         if result.passed:
+            for task_id in job.verification_task_routes:
+                clear_progress(job, task_id, "verify")
             return Transition(stage=Stage.ENSURE_FLAG, detail="verification passed")
         missing = [path for path in job.plan.files
                    if path not in job.deleted_files and not tools._resolve(path).is_file()] if job.plan else []
@@ -489,12 +500,17 @@ class Factory:
             output = "\n".join(report.output for report in result.commands if not report.passed)
             owner = reopen_task(job, output or result.actionable, tools)
             feedback = verification_feedback(owner, output or result.actionable, tools)
-        if job.verify_retries_used >= self.policy.verify_retries:
+        failure = (output or result.actionable) if not missing and result.classification != "flag" else feedback
+        progress = progress_retry_credit(job, owner.id, failure, "verify")
+        if not progress and job.verify_retries_used >= self.policy.verify_retries:
             detail = (f"E22: Job exhausted verify_retries ({self.policy.verify_retries}); "
                       f"last verification failure: {feedback}")
             return Transition(stage=Stage.FAILED, detail=detail, error=detail)
-        job.verify_retries_used += 1
+        if not progress:
+            job.verify_retries_used += 1
         job.verification_task_routes[owner.id] = job.verification_task_routes.get(owner.id, 0) + 1
+        if progress:
+            feedback += f"\nProgress retry uncharged ({job.progress_retry_streaks['verify:' + owner.id]}/3)."
         job.govern_feedback = "E15: " + feedback
         return Transition(stage=Stage.BUILD, detail=job.govern_feedback)
 
@@ -619,3 +635,34 @@ def _json(payload: dict[str, object]) -> str:
     import json
 
     return json.dumps(payload, indent=2) + "\n"
+
+
+def clear_progress(job: JobState, task_id: str, budget: str) -> None:
+    key = f'{budget}:{task_id}'
+    job.failure_test_ids.pop(key, None)
+    job.failure_test_counts.pop(key, None)
+    job.progress_retry_streaks.pop(key, None)
+
+
+def progress_retry_credit(job: JobState, task_id: str, feedback: str, budget: str) -> bool:
+    """Persist pytest failure signatures separately for each owner and retry budget."""
+    key = f'{budget}:{task_id}'
+    ids = {test for test in re.findall(r'^(?:FAILED|ERROR)\s+([^\s]+)', feedback, re.MULTILINE)
+           if '.py' in test or '::' in test}
+    counts = re.findall(r'(\d+) (failed|errors?)\b', feedback)
+    # Pytest can print multiple summaries; use the last count of each category.
+    summary = {kind.rstrip('s'): int(count) for count, kind in counts}
+    count = sum(summary.values()) if summary else None
+    previous = set(job.failure_test_ids.get(key, []))
+    previous_count = job.failure_test_counts.get(key)
+    improved = bool(ids and previous and ids < previous) or (
+        count is not None and previous_count is not None and count < previous_count)
+    streak = job.progress_retry_streaks.get(key, 0)
+    free = improved and streak < 3
+    job.progress_retry_streaks[key] = streak + 1 if free else 0
+    job.failure_test_ids[key] = sorted(ids)
+    if count is None:
+        job.failure_test_counts.pop(key, None)
+    else:
+        job.failure_test_counts[key] = count
+    return free

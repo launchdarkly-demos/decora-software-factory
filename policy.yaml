@@ -5,9 +5,9 @@
 version: 1
 builder_max_turns: 40
 builder_max_output_tokens: 16000
-verify_retries: 3
-per_task_retries: 3
-max_job_attempts: 30
+verify_retries: 4
+per_task_retries: 4
+max_job_attempts: 40
 split_attempts: 4
 whole_file_limit: 64000
 excerpt_budget: 160000

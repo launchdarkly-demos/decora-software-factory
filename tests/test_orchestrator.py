@@ -48,8 +48,8 @@ def test_verify_retries_exhausted_fails_without_a_pr(tmp_path: Path) -> None:
 
     assert job.stage == Stage.FAILED
     assert job.pr is None
-    assert "E22: Job exhausted verify_retries (3)" in (job.error or "")
-    assert len(job.verify_runs) == 4
+    assert "E22: Job exhausted verify_retries (4)" in (job.error or "")
+    assert len(job.verify_runs) == 5
 
 
 def test_ambiguous_verification_returns_to_builder(tmp_path: Path) -> None:
@@ -164,7 +164,7 @@ def test_unexpected_build_error_uses_task_budget_and_removes_the_worktree(tmp_pa
 
     job = make_factory(tmp_path, repo, Boom([low_plan()])).run(feature())
     assert job.stage == Stage.FAILED
-    assert "exhausted 3 retries" in job.error
+    assert "exhausted 4 retries" in job.error
     assert "RuntimeError" in job.error
 
     assert list((tmp_path / "home" / "worktrees").glob("job-*")) == []
@@ -289,7 +289,7 @@ def test_missing_capabilities_anchor_uses_bounded_task_corrections(tmp_path: Pat
 
     job = make_factory(tmp_path, repo).run(load_feature(ROOT / "samples" / "decor-room-mood.json"))
     assert job.stage == Stage.FAILED
-    assert job.task_retries == {"T1": 3}
+    assert job.task_retries == {"T1": 4}
     assert "capabilities" in job.error
     assert not (repo / "app" / "room_mood.py").exists()
 

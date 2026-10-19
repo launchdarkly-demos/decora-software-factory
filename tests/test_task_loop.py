@@ -103,9 +103,9 @@ def test_split_cap_is_separate_from_task_budget_and_overall_call_cap(tmp_path):
     job = make_factory(tmp_path, repo, ScriptedHarness([queued_plan(1)], builds=[cutoff]),
                        policy=rules).run(feature())
     assert job.stage == Stage.FAILED
-    assert job.builder_calls == 3
-    assert job.task_retries == {"T0": 1}
-    assert "exhausted 1 retries" in job.error
+    assert job.builder_calls == rules.max_job_attempts
+    assert job.task_retries == {}
+    assert "Job reached max_job_attempts" in job.error
     rules.max_job_attempts = 1
     job = make_factory(tmp_path, repo, ScriptedHarness([queued_plan(1)], builds=[cutoff]),
                        policy=rules).run(feature())

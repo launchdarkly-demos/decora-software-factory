@@ -102,7 +102,7 @@ Builder quick-test commands must be reduced to pytest targets; refuse other comm
 All tool executions set `NO_COLOR=1`; pytest uses `--color=no` and Ruff check uses `--output-format=concise`. Strip ANSI sequences from every report before logging or Builder feedback, including E10, E13 and E15.
 
 Each error belongs to one of three classes:
-- **Correction**: the same task is retried with the feedback, using 1 of `per_task_retries`, except failures reported by full verification (E14/E15), which use the independent job-level `verify_retries`.
+- **Correction**: the same task is retried with the feedback, using 1 of `per_task_retries`, except failures reported by full verification (E14/E15), which use the independent job-level `verify_retries`. Shrinking failures receive bounded uncharged progress retries under the calibration rules below.
 - **Split**: the same task continues from its checkpoint, using 1 of `split_attempts`. A split doesn't cost a retry.
 - **Fatal**: the job ends.
 
@@ -142,7 +142,7 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 - Output/turn cutoffs always split, even after the split allowance; smaller continuations consume only the hard job-call cap (40). Task and verification retry defaults are 4.
 - A retry with a strictly shrinking failing-test set or decreasing failing count is uncharged, at most three consecutive times per owning task and budget (quick/task vs full verification). Persist the preceding failure signature and streak. No identified failures means no progress credit. A charged correction or success resets the streak. Unrelated failures cannot qualify solely by IDs; sets must be a strict subset (or an explicit pytest summary count must decrease).
 - Flag audit accepts typed declarations, any constant bound to False used as the evaluation default, literal keyword/positional False and LD variation(key, ctx, False). True or unknown evaluation defaults still fail, even alongside a False declaration.
-- Six tests is planning guidance; apply never counts/rejects test functions. Production-caused test failures route to production owners. Safe Ruff fixes and format run before checkpoint imports, quick tests and full verification; unfixable errors remain corrections.
+- Six tests is planning guidance; a larger `max_test_functions` value is normalized to six without schema rejection, and apply never counts/rejects test functions. Production-caused test failures route to production owners. Safe Ruff fixes and format run before checkpoint imports, quick tests and full verification; unfixable errors remain corrections.
 - Transient provider backoff spends no task retries/splits; quota/auth pauses preserve checkpoints. Quick commands remain pytest-only because Builder commands are untrusted; safe extra files are auto-added. Plan repair stays bounded and pauses for intent/structure problems after deterministic normalization.
 - E16/E17, protected/escaping/deny paths, default-off flags, Builder git push/reset prohibitions, no pushes to main and the hard max_job_attempts cap are unchanged.
 
@@ -195,16 +195,16 @@ Every rejected proposal must append a receipt to the run’s `rejected_edits.jso
 - Run only after a checkpoint reporting `task_complete=true`, on that task's `quick_test_targets`. Never run on partial parts, including proposal commands that are quick tests.
 - Every quick test runs through `VerificationGate.run_quick`, using generated `pytest-gate.ini`, `--rootdir <worktree>` and cwd = worktree. Builder-supplied pytest commands contribute targets only; discard pytest options (including config/root overrides), and refuse non-pytest commands.
 - Route failures to the module-under-test owner below (E13), using that owner's `per_task_retries`. Exit 5 (no tests collected) is a correction to the test-file owner naming the target file; there is no failing test from which to infer a module defect.
-- If the owning task's retries are spent, record the failure as advisory and continue to full verification.
+- If the owning task's retries are spent and no progress credit applies, record the failure as advisory and continue to full verification.
 
 **Full verification.**
 - Run after every task is done; repeat after routed fixes until it passes or the independent job-level `verify_retries` budget is exhausted (default 4 retries after the initial run).
 - Every planned file must exist (E14).
 - Safe Ruff fixes and formatting of changed Python files are already committed in the task checkpoint before verification. Gate changed Python files using repository Ruff config when present; otherwise use isolated correctness rules `E9` and `F` minus auto-fixable rules. No line-length gate without repository config.
 - Run `pytest` on plan targets using `pytest-gate.ini` with the worktree root on `pythonpath`; then configured linters. Exit 4 names the missing path.
-- Each failed full verification reopens the owning task with E15 and consumes one job-level verification retry, without changing that task's `per_task_retries`. Persist the used count and routing history by task. After all allowed retries fail, E22 ends the job. Ordinary Builder corrections and the job call cap retain their own budgets.
+- Each failed full verification reopens the owning task with E15 and consumes one job-level verification retry unless bounded progress credit applies, without changing that task's `per_task_retries`. Persist the used count and routing history by task. After all allowed retries fail, E22 ends the job. Ordinary Builder corrections and the job call cap retain their own budgets.
 
-**Default-off flag evidence.** When policy requires default-off, accept either (a) `FLAG_DEFAULT = False` in production code, or (b) every evaluation of the selected flag key, literal or via a constant bound to it, supplies a literal false default (`default=False` or positional `False`). Any true default fails, even alongside false evidence. Failure messages must name both accepted forms and the offending source lines. Builder and Planner prompts must state the convention: define `FLAG_KEY` and `FLAG_DEFAULT = False` next to the key and evaluate with `default=FLAG_DEFAULT`.
+**Default-off flag evidence.** When policy requires default-off, accept either (a) `FLAG_DEFAULT = False` in production code, or (b) every evaluation of the selected flag key, literal or via a constant bound to it, supplies a false default (`default=False`, positional `False`, including LD `variation(key, ctx, False)`, or a constant such as `X_DEFAULT = False` used as default). Typed key/default declarations are equivalent. Any true or unknown evaluation default fails, even alongside false evidence. Failure messages must name both accepted forms and the offending source lines. Builder and Planner prompts must state the convention: define `FLAG_KEY` and `FLAG_DEFAULT = False` next to the key and evaluate with `default=FLAG_DEFAULT`.
 
 **Sending a failure back (quick or full verification).**
 Flag-audit verification failures bypass module-under-test routing: select the plan task owning the flag module, or the production file containing the selected key. Never select a tests-only task for a flag-audit failure. Preserve original ownership and the normal reopening/dependent-task rules below.
@@ -292,6 +292,8 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 
 ## 11. Acceptance criteria
 
+**Safeguard sweep replays (r1-r7).** `tests/test_safeguard_sweep_replays.py` replays r6 empty-anchor insert, r5 cutoff beyond split allowance, r1 shrinking failures, r7 stub replacement, whitespace uniqueness, flag equivalents and true-default refusal, safe formatting, >6 tests and unchanged conflict/safety behavior. Existing #27 provider replays remain required. Original r1–r7 receipts remain the evidence; tests use deterministic Git-backed proposals and failure sequences.
+
 **Replay suite** (mock harness, in CI, each must reach `DONE` with a draft PR record):
 
 1. **#8**: a whole-file write to an existing planned file.
@@ -362,7 +364,3 @@ Items 1–13 describe the baseline implementation changes already delivered on t
 **#27/#28 / replay_r6.** Replay the r6 plan without flag ownership: insert provision_flag before test tasks. Three transient RateLimitErrors then success reach DONE with unchanged task_retries. insufficient_quota pauses at AWAIT_HUMAN with resume_stage BUILD and checkpoints retained; answer continue resumes to DONE. Unit coverage includes safe code extraction, retry-after/reset headers and 401 authentication, PLAN/REVIEW pauses and exhausted transient retries.
 
 **#26 / replay_r5.** Reject and restore a replace truncating `app/store.py` to three lines, preserving other proposal files; charge a broken production import to its owning task with no verify retry; reopen a test task, truncate its correction and use split allowance; repair and reach DONE with a persisted draft PR. Replay the r5 plan’s wrong flag key and prove deterministic policy override. Unit coverage includes threshold/exemption/explicit rewrite, import mapping/environment, traceback routing, normalization/dependencies and split exhaustion.
-
-## §11 supplemental safeguard sweep replays
-
-`tests/test_safeguard_sweep_replays.py` replays r6 empty-anchor insert, r5 cutoff beyond split allowance, r1 shrinking failures, r7 stub replacement, whitespace uniqueness, flag equivalents and true-default refusal, safe formatting, >6 tests and unchanged safety/provider behavior. Original r1–r7 receipts remain the evidence; tests use deterministic Git-backed proposals and failure sequences.

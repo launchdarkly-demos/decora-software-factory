@@ -11,9 +11,12 @@ from factory.gitcmd import git
 from factory.models import BuildProposal, BuildResult, JobState
 from factory.task_queue import current_task
 from factory.tools.anchors import anchor_span
-from factory.tools.layer import ToolLayer, _anchor_error
+from factory.tools.layer import ToolLayer
 from factory.tools.safety import check_content, redact_secrets
 from factory.verification.commands import pytest_targets
+
+# Base files shorter than this are cheap to restore and are often rewritten wholesale.
+DESTRUCTIVE_MIN_BASE_LINES = 80
 
 
 def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> BuildResult:
@@ -92,15 +95,38 @@ def _apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) ->
                 modes[edit.destination] = path.stat().st_mode
             staged[edit.path] = None
         else:
-            if edit.kind in {"replace", "insert_after", "insert_before"} and not edit.old:
-                raise FactoryError(_anchor_error(edit.path, "", "", 0))
+            kind: str = edit.kind
+            if kind in {"replace", "insert_after", "insert_before"} and not edit.old:
+                exists = staged[edit.path] is not None if edit.path in staged else path.exists()
+                if edit.path in staged and staged[edit.path] is None:
+                    current(edit.path)  # Preserve E8 for edits following a delete/move.
+                text = current(edit.path) if exists else ""
+                if kind == "replace" and text:
+                    raise FactoryError(f"{edit.path}: empty replace anchor on a nonempty file; "
+                                       "use a unique anchor or explicit whole-file write."
+                                       + _whole_file_feedback(tools, job, edit.path, text))
+                converted = {"insert_after": "append", "insert_before": "prepend", "replace": "write"}[kind]
+                anchor_fallbacks.append(f"Empty-anchor conversion: {edit.path} {kind} -> {converted}")
+                if converted == "write":
+                    staged[edit.path] = edit.new
+                    previous_edits[edit.path] = edit
+                    continue
+                kind = converted
             text = current(edit.path)
-            if edit.kind == "append":
+            if kind == "append":
                 staged[edit.path] = text + edit.new
-            elif edit.kind == "prepend":
+            elif kind == "prepend":
                 staged[edit.path] = edit.new + text
             else:
-                start, end, fallback = anchor_span(edit.path, text, edit.old)
+                try:
+                    start, end, fallback = anchor_span(edit.path, text, edit.old)
+                except FactoryError as exc:
+                    # Only missing (not ambiguous) replace anchors receive whole-file guidance.
+                    shares_line = any(line.strip() and line.strip() in text
+                                      for line in edit.old.splitlines())
+                    if kind == "replace" and "matched 0 times" in str(exc) and shares_line:
+                        raise FactoryError(str(exc) + _whole_file_feedback(tools, job, edit.path, text)) from None
+                    raise
                 original_anchor = text[start:end]
                 replacement = (original_anchor + edit.new if edit.kind == "insert_after" else
                                edit.new + original_anchor if edit.kind == "insert_before" else edit.new)
@@ -227,7 +253,7 @@ def check_destructive_edits(
                 raise FactoryError(f'Cannot read base content for {path}')
             continue
         base_lines = base.stdout.splitlines()
-        if len(base_lines) < 20:
+        if len(base_lines) < DESTRUCTIVE_MIN_BASE_LINES:
             continue
         before = tools.read(path).splitlines()
         base_indices = {index for block in difflib.SequenceMatcher(
@@ -245,3 +271,12 @@ def check_destructive_edits(
                 f'E9: {path}:{start + 1}:1: destructive edit removes {count}/{len(base_lines)} lines '
                 f'({count / len(base_lines):.0%}) of base content; keep existing lines and change only the needed '
                 f'region using several smaller replace/insert_* edits. Head of removed region:\n{head}')
+
+
+def _whole_file_feedback(tools: ToolLayer, job: JobState, path: str, text: str) -> str:
+    assert job.worktree is not None
+    base = git(tools.worktree, 'ls-tree', job.worktree.base_sha, '--', path)
+    job_created = base.returncode == 0 and not base.stdout.strip()
+    if len(text.splitlines()) < DESTRUCTIVE_MIN_BASE_LINES or job_created:
+        return f"\nUse an explicit whole-file write after reviewing the full current file ({path}):\n{text}"
+    return ''

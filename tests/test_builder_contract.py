@@ -283,11 +283,9 @@ def test_anchor_matching_preserves_real_newline_bytes(checkpoint):
     (tools.worktree / 'windows.txt').write_bytes(b'header\r\nanchor\r\nfooter\r\n')
     reader = RepositoryReader(tools.worktree, tools.policy)
     assert reader.read('windows.txt', 1, 3) == 'header\r\nanchor\r\nfooter\r\n'
-    with pytest.raises(FactoryError, match='anchor matched 0 times'):
-        apply_proposal(job, tools, proposal([
-            FileEdit(path='windows.txt', kind='replace', old='anchor\n', new='wrong\n')]))
-    apply_proposal(job, tools, proposal([
-        FileEdit(path='windows.txt', kind='replace', old='anchor\r\n', new='correct\r\n')]))
+    result = apply_proposal(job, tools, proposal([
+        FileEdit(path='windows.txt', kind='replace', old='anchor\n', new='correct\r\n')]))
+    assert result.anchor_fallbacks
     assert (tools.worktree / 'windows.txt').read_bytes() == b'header\r\ncorrect\r\nfooter\r\n'
 
 
@@ -307,9 +305,9 @@ def test_approved_policy_budget_defaults():
     from factory.governance.policy import Policy
 
     rules = Policy()
-    assert rules.verify_retries == 3
+    assert rules.verify_retries == 4
     assert (rules.builder_max_output_tokens, rules.builder_max_turns) == (16000, 40)
-    assert (rules.per_task_retries, rules.split_attempts, rules.max_job_attempts) == (3, 4, 30)
+    assert (rules.per_task_retries, rules.split_attempts, rules.max_job_attempts) == (4, 4, 40)
     assert (rules.whole_file_limit, rules.excerpt_budget) == (64000, 160000)
     assert rules.timeout_for('build') == 600
 

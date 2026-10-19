@@ -109,7 +109,7 @@ def test_replay_r5(tmp_path):
 def test_guard_counts_removed_lines_and_restores_checkpoint(tmp_path, kind):
     repo = init_repo(tmp_path / 'repo')
     tools = ToolLayer(repo, policy())
-    tools.write('existing.txt', ''.join(f'line {i}\n' for i in range(20)))
+    tools.write('existing.txt', ''.join(f'line {i}\n' for i in range(80)))
     sha = tools.commit('Original', ['existing.txt'])
     job = bare_job(tmp_path, plan=low_plan(files=['existing.txt']), worktree=WorktreeInfo(
         path=str(repo), branch='main', base_sha=sha))
@@ -118,7 +118,7 @@ def test_guard_counts_removed_lines_and_restores_checkpoint(tmp_path, kind):
         {'old': old, 'new': 'three\nlines\nonly\n'} if kind == 'replace' else {})
     # Demonstrate the requested restore, even if another caller left dirty tracked files.
     tools.write('README.md', 'dirty before rejection\n')
-    with pytest.raises(FactoryError, match=r'E9: existing.txt:1:1: destructive edit removes 20/20 lines'):
+    with pytest.raises(FactoryError, match=r'E9: existing.txt:1:1: destructive edit removes 80/80 lines'):
         apply_proposal(job, tools, proposal([write('new.txt', 'never written'),
             FileEdit(path='existing.txt', kind=kind, **fields)]))
     assert tools.read('existing.txt') == old and tools.read('README.md') == 'mini decora\n'
@@ -127,7 +127,7 @@ def test_guard_counts_removed_lines_and_restores_checkpoint(tmp_path, kind):
 
 
 @pytest.mark.parametrize(('size', 'removed', 'rewrite', 'allowed'), [
-    (19, 19, False, True), (20, 10, False, True), (20, 11, False, False), (20, 20, True, True),
+    (79, 79, False, True), (80, 40, False, True), (80, 41, False, False), (80, 80, True, True),
 ])
 def test_guard_threshold_small_file_and_explicit_rewrite(tmp_path, size, removed, rewrite, allowed):
     repo = init_repo(tmp_path / 'repo')
@@ -144,22 +144,22 @@ def test_guard_threshold_small_file_and_explicit_rewrite(tmp_path, size, removed
         apply_proposal(job, tools, edits)
         assert tools.read('existing.txt') == ''.join(lines[removed:])
     else:
-        with pytest.raises(FactoryError, match='11/20'):
+        with pytest.raises(FactoryError, match='41/80'):
             apply_proposal(job, tools, edits)
 
 
 def test_guard_compares_final_proposal_and_combined_removals(tmp_path):
     repo = init_repo(tmp_path / 'repo')
     tools = ToolLayer(repo, policy())
-    source = ''.join(f'line {i}\n' for i in range(20))
+    source = ''.join(f'line {i}\n' for i in range(80))
     tools.write('existing.txt', source)
     sha = tools.commit('Original', ['existing.txt'])
     job = bare_job(tmp_path, plan=low_plan(files=['existing.txt']), worktree=WorktreeInfo(
         path=str(repo), branch='main', base_sha=sha))
     apply_proposal(job, tools, proposal([write('existing.txt', 'temporary\n'), write('existing.txt', source)]))
-    with pytest.raises(FactoryError, match='12/20'):
+    with pytest.raises(FactoryError, match='42/80'):
         apply_proposal(job, tools, proposal([FileEdit(path='existing.txt', kind='replace',
-            old=''.join(f'line {i}\n' for i in range(a, a + 6)), new='') for a in [0, 6]]))
+            old=''.join(f'line {i}\n' for i in range(a, a + 21)), new='') for a in [0, 21]]))
 
 
 def test_collection_traceback_uses_innermost_production_owner(tmp_path):

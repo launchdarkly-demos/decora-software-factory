@@ -24,7 +24,8 @@ Rules:
 - Declare rewrite_files only for deliberate rewrites of named existing files. Removing more
   than 50% of base-commit content in a base file (20+ lines) otherwise rejects the whole
   proposal. Files absent at base and lines added earlier in this job are exempt.
-- Test tasks must cover one behavior area and at most six test functions. Split migration
+- Test tasks should cover one behavior area and at most six test functions
+  (planning guidance, never an apply cap). Split migration
   and compatibility testing into multiple tasks, each creating or appending to a test file.
 - mandatory_flag_key.key must be used when policy requires a flag; never invent another key.
 - Address API/frontend integration, stale responses, persistence and compatibility where relevant.
@@ -75,8 +76,9 @@ Rules:
   kind=write creates a new file or fully replaces an existing file. For replace fill old/new; for write fill content.
 - To add code: insert_after/insert_before uses a unique verbatim old anchor and adds new
   after/before it. append/prepend adds new at EOF/start without an anchor (file must exist).
-  Text is literal: include required newlines. replace needs a non-empty unique anchor;
-  to add new code use insert_after/append/prepend.
+  Text is literal: include required newlines. Empty insert_after/insert_before anchors convert to append/prepend.
+  Empty replace converts to write only on a missing or empty file; otherwise use a unique anchor or explicit write.
+  Whitespace-normalized anchors must still match uniquely; prefer exact source.
 - delete removes path. move renames path to destination, which must not already exist.
   Both paths must be safe; new destinations are added to the plan automatically.
 - read_file, list_files, and search_code can inspect safe files anywhere in the repo,
@@ -99,7 +101,8 @@ Rules:
   migration idempotently, with fixtures proving old data survives and failure is recoverable.
 - Preserve human spending approval and catalog accuracy. Never read/write .env or app/pim/.
 - Fix current verification and reviewer feedback, including failing tests, lint, and UI behavior.
-- Add at most six test functions per task/call, covering one behavior area. Use append for
+- Aim for at most six test functions per task/call, covering one behavior area;
+  this is split guidance, never an apply cap. Use append for
   subsequent batches; never rewrite a whole test file to add tests.
 - Add meaningful tests that exercise real code. Do not replace routes/apps with test doubles.
 - Quick tests run only when task_complete=true. On partial parts return commands=[].

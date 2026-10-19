@@ -67,6 +67,9 @@ def normalize_test_tasks(plan: ImplementationPlan) -> None:
     replacements: dict[str, str] = {}
     used_ids = {task.id for task in plan.tasks}
     for task in plan.tasks:
+        # A model may propose a larger batch: calibrate guidance without rejecting the plan.
+        if is_test_task(task):
+            task.max_test_functions = min(task.max_test_functions, 6)
         task.depends_on = list(dict.fromkeys(replacements.get(dep, dep) for dep in task.depends_on))
         files = [path for path in task.files if _test_file(path)]
         broad = bool(re.search(r'migration.*compatibility|compatibility.*migration',

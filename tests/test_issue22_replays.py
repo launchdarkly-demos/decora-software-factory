@@ -156,9 +156,9 @@ def test_replay_13_verify_budget_survives_spent_quick_budget(tmp_path):
         assert job.verification_task_routes == {'T5': 1}
 
     calls = [('T5', proposal([write(MODULE, BAD_MODULE), write(TEST, TESTS)]), None)]
-    calls += [('T5', proposal(), None)] * 3  # Spend all three quick-test retries.
+    calls += [('T5', proposal(), None)] * 3  # Spend the explicitly configured three quick-test retries.
     calls += [('T5', fix(), repair)]
-    factory, job, _ = run(tmp_path, plan, calls)
+    factory, job, _ = run(tmp_path, plan, calls, per_task_retries=3)
     assert_draft(job)
     assert [result.passed for result in job.verify_runs] == [False, True]
     restored = factory.status(job.id)

@@ -97,24 +97,32 @@ def audit_flag(diff: str, flag_key: str | None, *, must_default_off: bool) -> li
         problems.append(f"diff does not contain LaunchDarkly flag {flag_key}")
     if must_default_off:
         assignments = list(re.finditer(
-            r"^[ \t]*(?:export\s+)?(?:(?:const|let)\s+)?FLAG_DEFAULT\s*=\s*"
+            r"^[ \t]*(?:export\s+)?(?:(?:const|let)\s+)?(\w+)\s*(?::[^=\n]+)?=\s*"
             r"(False|false|True|true)[ \t]*;?[ \t]*(?:#.*|//.*)?$",
             code, re.MULTILINE))
-        declared_off = any(match[1] in {"False", "false"} for match in assignments)
+        # Every binding must prove False; conflicting or true declarations cannot
+        # be hidden by a separate FLAG_DEFAULT=False line.
+        bindings: dict[str, list[bool]] = {}
+        for match in assignments:
+            bindings.setdefault(match[1], []).append(match[2] in {"False", "false"})
+        declared_off = bool(bindings.get("FLAG_DEFAULT")) and all(bindings["FLAG_DEFAULT"])
         offending = [code.count("\n", 0, match.start()) for match in assignments
-                     if match[1] in {"True", "true"}]
+                     if match[1] == "FLAG_DEFAULT" and match[2] in {"True", "true"}]
         evaluations = _evaluation_defaults(code, flag_key)
         for line, default in evaluations:
-            if isinstance(default, ast.Constant) and default.value is True:
-                offending.append(line)
-            elif not declared_off and not (isinstance(default, ast.Constant) and default.value is False):
+            literal_off = isinstance(default, ast.Constant) and default.value is False
+            constant_off = (isinstance(default, ast.Name) and bool(bindings.get(default.id))
+                            and all(bindings[default.id]))
+            if not (literal_off or constant_off):
                 offending.append(line)
         if offending or not (declared_off or evaluations):
             locations = sorted(set(offending)) or list(range(len(records)))
             evidence = "\n".join(f"{records[i][0]}: {records[i][1]}" for i in locations)
             problems.append(
-                "FLAG_DEFAULT must be False: accepted forms are (a) FLAG_DEFAULT = False or "
-                "(b) every flag evaluation passes default=False or positional False; any true default fails."
+                "FLAG_DEFAULT must be False: accepted forms are (a) FLAG_DEFAULT = False "
+                "(typed declarations accepted) or "
+                "(b) every flag evaluation passes default=False or positional False or a constant bound to False; "
+                "any true or unknown default fails."
                 "\nOffending lines (or missing evidence):\n" + evidence)
     return problems
 

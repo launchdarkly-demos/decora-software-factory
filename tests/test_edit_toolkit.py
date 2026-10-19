@@ -88,11 +88,10 @@ def test_missing_sources_are_correctable_without_partial_write(editing, kind):
 
 
 @pytest.mark.parametrize('kind', ['replace', 'insert_after', 'insert_before'])
-@pytest.mark.parametrize('old', ['', 'missing', 'e'])
+@pytest.mark.parametrize('old', ['missing', 'e'])
 def test_invalid_anchors_are_atomic_and_empty_replace_is_actionable(editing, kind, old):
     job, tools = editing
-    message = 'need a non-empty unique anchor'
-    with pytest.raises(FactoryError, match=message if not old else 'anchor matched'):
+    with pytest.raises(FactoryError, match='anchor matched'):
         apply(job, tools, [FileEdit(path='source.txt', kind='append', new='first\n'),
                            FileEdit(path='source.txt', kind=kind, old=old, new='bad')])
     assert tools.read('source.txt') == 'header\nanchor\nfooter\n'

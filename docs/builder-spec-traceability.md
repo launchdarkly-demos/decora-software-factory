@@ -212,6 +212,6 @@ The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file l
 | E1/E2/E21 never spend corrections; hard job cap retained | `machine.py` | sweep cutoff replay; r5 log 38 |
 | §5/§6 shrinking failures free ≤3 consecutively; defaults 4/4/40 | `machine.py`, `models.py`, `policy.py`, `policy.decora.yaml` | sweep progress replay; r1 test retry exhaustion |
 | §8 equivalent False defaults and unknown/True refusal | `flags.py` | sweep flag parametrizations; #24/r3 |
-| §2 six-test guidance; §8 production routing | planner normalization and `task_queue.py` | sweep >6 tests; #22/#26 routing replays |
+| §2 six-test guidance without schema upper bound; §8 production routing | `models.py`, planner normalization and `task_queue.py` | sweep >6 tests; #22/#26 routing replays |
 | §4/§8 safe Ruff fix/format before imports/tests | `staging.py`, `formatting.py` (unchanged) | #23 replays and sweep formatting |
 | E18 backoff / provider quota pause; safe auto-add; pytest command refusal; plan repair pause | existing provider, apply, command and governance code (unchanged) | #27/#28 and safety/command/plan regressions; sweep audit report |

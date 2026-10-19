@@ -22,7 +22,13 @@ from factory.errors import (
     ProviderBlockedError,
     ProviderTransientError,
 )
-from factory.governance.policy import Policy, fixed_flag_key, flag_required, selected_flag_key
+from factory.governance.policy import (
+    Policy,
+    fixed_flag_key,
+    flag_required,
+    flags_externally_managed,
+    selected_flag_key,
+)
 from factory.harness.repository_tools import repository_tools
 from factory.harness.tokens import charge_provider
 from factory.models import BuildProposal, ImplementationPlan, JobState, RepoContext, ReviewReport
@@ -52,14 +58,23 @@ class OpenAIAgentsHarness:
     def plan(self, job: JobState, context: RepoContext) -> ImplementationPlan:
         from agents import Agent
 
+        external = flags_externally_managed(self.policy)
         payload = json.dumps(
             {
                 "feature": _feature_for_model(job),
                 "context": context.model_dump(),
                 "answers": job.human_answers,
-                "mandatory_flag_key": {"key": fixed_flag_key(self.policy, job),
-                                       "mandatory_when_flag_required": True},
+                "mandatory_flag_key": {"key": None if external else fixed_flag_key(self.policy, job),
+                                       "mandatory_when_flag_required": not external},
                 "flag_policy": self.policy.flags.model_dump(),
+                "flags_externally_managed": ({
+                    "reason": self.policy.flags.external_reason,
+                    "instruction": (
+                        "Flags and guarded rollouts are managed externally "
+                        f"({self.policy.flags.external_reason}). Do not introduce flag_key, "
+                        "provision_flag tasks, flag_default, or guarded_rollout_metric."
+                    ),
+                } if external else None),
                 "rollout_rules": {key: rule.model_dump() for key, rule in self.policy.rollout_rules.items()},
                 "guarded_rollout": self.policy.guarded_rollout.model_dump(),
                 "plan_validation_feedback": job.govern_feedback,

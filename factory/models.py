@@ -189,7 +189,7 @@ class WorktreeInfo(BaseModel):
 class FlagAssurance(BaseModel):
     """What the factory confirmed about the LaunchDarkly flag before review."""
 
-    mode: Literal["live", "offline"]
+    mode: Literal["live", "offline", "external"]
     required: bool
     key: str | None = None
     project_key: str | None = None

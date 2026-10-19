@@ -20,10 +20,24 @@ class ApprovalRules(BaseModel):
 class FlagRules(BaseModel):
     module: str = "app/flags.py"
     enabled: bool = False
+    # factory = this factory plans/audits/provisions; external = another system owns flags.
+    management: Literal["factory", "external"] = "factory"
+    external_reason: str = ""
     key_pattern: str = r"^decora-[a-z0-9-]+$"
     must_default_off: bool = True
     issue_flag_keys: dict[str, str] = Field(default_factory=dict)
     default_key: str | None = None
+
+
+class IssueTriggers(BaseModel):
+    """Watcher intake rules when `factory temporal watch-issues --policy` is set."""
+
+    ready_label: str = "factory:ready"
+    retry_label: str = "factory:retry"
+    authors: list[str] = Field(default_factory=list)
+    labelers: list[str] = Field(default_factory=list)
+    agent_accounts: list[str] = Field(default_factory=list)
+    slug: str | None = None
 
 
 class RolloutRule(BaseModel):
@@ -108,6 +122,7 @@ class Policy(BaseModel):
     flags: FlagRules = Field(default_factory=FlagRules)
     launchdarkly: LaunchDarklyRules = Field(default_factory=LaunchDarklyRules)
     pull_request: PullRequestRules = Field(default_factory=PullRequestRules)
+    issue_triggers: IssueTriggers = Field(default_factory=IssueTriggers)
 
     def timeout_for(self, stage: str) -> float:
         return float(self.stage_timeout_seconds.get(stage, 600 if stage == "build" else 120))
@@ -134,7 +149,7 @@ class Policy(BaseModel):
         normalized = rel.replace("\\", "/").lstrip("/")
         if normalized == ".git" or normalized.startswith(".git/") or "/.git/" in f"/{normalized}":
             raise SafetyError(f"Safety violation: protected path on `{rel}`.")
-        if any(part.startswith(".env") or part in {"policy.yaml", "policy.decora.yaml"}
+        if any(part.startswith(".env") or part in {"policy.yaml", "policy.decora.yaml", "policy.decora-org.yaml"}
                for part in Path(normalized).parts):
             raise SafetyError(f"Safety violation: protected path on `{rel}`.")
         for pattern in [*self.deny_paths, *self.protected_paths]:
@@ -153,7 +168,36 @@ class Decision(BaseModel):
 
 def load_policy(path: Path) -> Policy:
     data = yaml.safe_load(path.read_text()) or {}
-    return Policy.model_validate(data)
+    policy = Policy.model_validate(data)
+    if policy.flags.management == "external":
+        if not policy.flags.external_reason.strip():
+            raise FactoryError("flags.management=external requires flags.external_reason")
+        if policy.flags.issue_flag_keys or policy.flags.default_key:
+            raise FactoryError(
+                "flags.management=external cannot set issue_flag_keys or default_key "
+                "(flags are owned externally; use flags.enabled=false to disable flags entirely)"
+            )
+    return policy
+
+
+def flags_externally_managed(policy: Policy) -> bool:
+    return policy.flags.enabled and policy.flags.management == "external"
+
+
+def login_allowed(login: str | None, allowlist: list[str]) -> bool:
+    """Case-insensitive allowlist match; also tries with/without a trailing [bot] suffix."""
+    if not login or not allowlist:
+        return False
+    candidates = {_login_key(login), _login_key(login.removesuffix("[bot]")),
+                  _login_key(login if login.endswith("[bot]") else f"{login}[bot]")}
+    allowed = {_login_key(item) for item in allowlist}
+    allowed |= {_login_key(item.removesuffix("[bot]")) for item in allowlist}
+    allowed |= {_login_key(item if item.endswith("[bot]") else f"{item}[bot]") for item in allowlist}
+    return bool(candidates & allowed)
+
+
+def _login_key(login: str) -> str:
+    return login.strip().lower()
 
 
 def change_class(job: JobState, plan: ImplementationPlan) -> ChangeClass | None:
@@ -215,7 +259,7 @@ def selected_flag_key(job: JobState) -> str | None:
 def flag_required(policy: Policy, job: JobState, plan: ImplementationPlan | None = None) -> bool:
     """Whether this job needs flag provisioning and audit, including an optional opt-in."""
     plan = plan or job.plan
-    if not policy.flags.enabled or plan is None:
+    if not policy.flags.enabled or plan is None or flags_externally_managed(policy):
         return False
     rule = policy.rollout_rules.get(change_class(job, plan) or "")
     if rule is None or rule.flag == "forbidden":
@@ -228,7 +272,7 @@ def flag_required(policy: Policy, job: JobState, plan: ImplementationPlan | None
 
 
 def guarded_rollout_required(policy: Policy, job: JobState) -> bool:
-    if not policy.flags.enabled or job.plan is None:
+    if not policy.flags.enabled or job.plan is None or flags_externally_managed(policy):
         return False
     rule = policy.rollout_rules.get(change_class(job, job.plan) or "")
     return bool(rule and rule.guarded_rollout == "required")
@@ -257,7 +301,7 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
         job.fixed_flag_key = fixed
         plan.flag_key = fixed
     keys = flag_keys(job, plan)
-    if policy.flags.enabled:
+    if policy.flags.enabled and not flags_externally_managed(policy):
         if len(keys) > 1:
             return Decision(pause=True, retry_plan=True, reason="Use one flag key per job; reuse the issue's key.",
                             resume_stage="plan")

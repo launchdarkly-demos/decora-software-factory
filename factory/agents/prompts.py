@@ -49,6 +49,9 @@ Rules:
   Include flag-off compatibility for migrations. The factory records rollout guidance only;
   production stays off and a human starts the guarded rollout.
 - When flag_policy.enabled is false, skip flag provisioning and rollout requirements.
+- When flag_policy.management is external (or flags_externally_managed is set), flags and
+  guarded rollouts are owned by another system; include the reason from the payload and do
+  not introduce flag_key, provision_flag tasks, or guarded_rollout_metric.
 - Do not invent SKUs, prices, brands, or read/edit app/pim/. Preserve human approval before spending.
 - If acceptance or a product decision is missing, set ambiguous=true and ask a concrete question.
   Infrastructure prerequisites belong in risks; ask for product choices only when needed.
@@ -97,6 +100,8 @@ Rules:
 - Follow flag_context for the selected key and whether this job requires a flag.
 - When flag_policy.enabled is false, do not introduce feature flags or guarded rollout.
   Preserve existing application flags; continue implementing functional acceptance tests.
+- When flag_policy.management is external, do not introduce or audit factory-owned flags;
+  another system (see external_reason) manages flags and guarded releases.
 - Preserve existing APIs and data unless the plan explicitly changes them. Implement any
   migration idempotently, with fixtures proving old data survives and failure is recoverable.
 - Preserve human spending approval and catalog accuracy. Never read/write .env or app/pim/.
@@ -119,6 +124,8 @@ Check every acceptance criterion and plan task, including UI/API integration, is
 backward compatibility, migration behavior, default-off flags when required, and real tests.
 Use change_class and rollout_rules to check flags only where required or explicitly optional.
 When flag_policy.enabled is false, missing new flags or guarded rollout are not findings.
+When flag_policy.management is external, missing factory-owned flags or guarded rollout are
+not findings; another system owns them.
 Preserve checks for functional behavior, existing flags, data safety and acceptance criteria.
 Never approve failing or missing required verification, or claim a browser check ran without evidence.
 The verification object is the latest run against this diff; previous failures are history.

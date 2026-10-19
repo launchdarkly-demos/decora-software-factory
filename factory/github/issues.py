@@ -17,6 +17,7 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from factory.command_output import strip_ansi
 from factory.errors import FactoryError, GovernanceError
 from factory.gitcmd import git_env
+from factory.governance.policy import IssueTriggers, login_allowed
 from factory.intake.load import parse_issue_body
 from factory.temporal.workflow import FactoryWorkflow
 from factory.tools.safety import check_content
@@ -52,21 +53,38 @@ class GitHubIssues:
         items = self.api(f"{self.root}/issues?state=open&labels={quote(label, safe='')}&per_page=100", pages=True)
         return [item for item in items if "pull_request" not in item]
 
+    def open_issues(self) -> list[dict]:
+        items = self.api(f"{self.root}/issues?state=open&per_page=100", pages=True)
+        return [item for item in items if "pull_request" not in item]
+
     def remove_label(self, number: int, label: str) -> None:
         self.api(f"{self.root}/issues/{number}/labels/{quote(label, safe='')}",
                  method="DELETE", missing_ok=True)
 
-    def approved(self, issue: dict, label: str) -> bool:
+    def label_actor(self, issue: dict, label: str) -> str | None:
         events = self.api(f"{self.root}/issues/{issue['number']}/timeline?per_page=100", pages=True)
         matching = [event for event in events if event.get("event") in {"labeled", "unlabeled"}
                     and event.get("label", {}).get("name") == label]
         if not matching or matching[-1]["event"] != "labeled":
-            return False
-        actor = (matching[-1].get("actor") or {}).get("login")
-        if not actor:
-            return False
+            return None
+        return (matching[-1].get("actor") or {}).get("login")
+
+    def has_write_permission(self, actor: str) -> bool:
         permission = self.api(f"{self.root}/collaborators/{quote(actor, safe='')}/permission")
         return permission.get("permission") in {"admin", "write", "maintain"}
+
+    def approved(self, issue: dict, label: str, *, triggers: IssueTriggers | None = None) -> bool:
+        actor = self.label_actor(issue, label)
+        if not actor:
+            return False
+        if not self.has_write_permission(actor):
+            return False
+        if triggers is None:
+            return True
+        labelers = list(triggers.labelers) + list(triggers.agent_accounts)
+        if not labelers:
+            return True
+        return login_allowed(actor, labelers)
 
     def comment(self, number: int, job_id: str, body: str) -> None:
         if self.login is None:
@@ -126,11 +144,13 @@ class IssueBridge:
     """Single-host polling bridge. Temporal IDs deduplicate submission; disk tracks ongoing jobs."""
 
     def __init__(self, client, github: GitHubIssues, home: Path, queue: str, label: str, *,
-                 address: str | None = None, namespace: str | None = None, retry_label: str = "factory:retry"):
+                 address: str | None = None, namespace: str | None = None, retry_label: str = "factory:retry",
+                 triggers: IssueTriggers | None = None):
         self.client, self.github, self.queue, self.label = client, github, queue, label
         if retry_label == label:
             raise FactoryError("Ready and retry labels must differ")
         self.retry_label = retry_label
+        self.triggers = triggers
         self.address = address or client.service_client.config.target_host
         self.namespace = namespace or client.namespace
         home.mkdir(parents=True, exist_ok=True)
@@ -141,53 +161,33 @@ class IssueBridge:
             raise FactoryError("Bridge home belongs to a different repository, queue, or namespace")
         self.state.setdefault("scope", scope)
         self.state.setdefault("jobs", {})
+        self.state.setdefault("ignored", {})
 
     def save(self):
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(self.state))
         temporary.replace(self.path)
 
+    def _author_allowlist(self) -> list[str]:
+        if self.triggers is None:
+            return []
+        return list(self.triggers.authors) + list(self.triggers.agent_accounts)
+
+    def _ignore_once(self, issue: dict, reason: str) -> None:
+        key = str(issue["id"])
+        if key in self.state["ignored"]:
+            return
+        self.state["ignored"][key] = {"number": issue["number"], "reason": reason}
+        self.save()
+        print(f"Ignoring issue #{issue['number']} ({issue['id']}): {reason}", flush=True)
+
+    def _author_login(self, issue: dict) -> str | None:
+        return (issue.get("user") or {}).get("login")
+
     async def tick(self):
-        for label in (self.label, self.retry_label):
-            for issue in self.github.ready(label):
-                if issue.get("state", "open") != "open":
-                    continue
-                base = f"job-gh-{issue['id']}"
-                related = {key: record for key, record in self.state["jobs"].items()
-                           if key == base or re.fullmatch(re.escape(base) + r"-r\d+", key)}
-                if label == self.label:
-                    if base in related:
-                        continue
-                    job_id = base
-                else:
-                    # A provider pause resumes the same workflow/checkpoints. Other
-                    # active jobs still block creating a fresh retry workflow.
-                    active = [(key, record) for key, record in related.items() if not record["terminal"]]
-                    if active:
-                        if len(active) == 1 and self.github.approved(issue, label):
-                            await self._resume_provider_pause(*active[0])
-                        continue
-                    if base not in related or any(record.get("remove_retry_label") for record in related.values()):
-                        continue
-                    attempt = max([int(key.rsplit("-r", 1)[1]) for key in related if key != base], default=0) + 1
-                    job_id = f"{base}-r{attempt}"
-                if not self.github.approved(issue, label):
-                    continue
-                # Freeze the original issue anew; later edits never change a running request.
-                feature = parse_issue_body(issue["title"], issue.get("body") or "", url=issue["html_url"],
-                                           labels=[item["name"] for item in issue.get("labels", [])])
-                try:
-                    await self.client.start_workflow(
-                        FactoryWorkflow.run, feature.model_dump(mode="json"), id=job_id,
-                        task_queue=self.queue, id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
-                    )
-                except WorkflowAlreadyStartedError:
-                    pass
-                record = {"number": issue["number"], "terminal": False}
-                if label == self.retry_label:
-                    record["remove_retry_label"] = self.retry_label
-                self.state["jobs"][job_id] = record
-                self.save()
+        await self._intake_labeled(self.label, retry=False)
+        await self._intake_labeled(self.retry_label, retry=True)
+        await self._intake_authors()
         # A stalled job must not prevent updates for unrelated jobs.
         errors = []
         for job_id, record in self.state["jobs"].items():
@@ -202,6 +202,73 @@ class IssueBridge:
                 errors.append(f"{job_id}: {type(exc).__name__}: {exc}")
         if errors:
             raise FactoryError(f"Could not sync {len(errors)} job(s); retry next poll: " + "; ".join(errors))
+
+    async def _intake_labeled(self, label: str, *, retry: bool) -> None:
+        for issue in self.github.ready(label):
+            if issue.get("state", "open") != "open":
+                continue
+            if not self.github.approved(issue, label, triggers=self.triggers):
+                if self.triggers is not None and (
+                        self.triggers.labelers or self.triggers.agent_accounts):
+                    actor = self.github.label_actor(issue, label)
+                    if actor and self.github.has_write_permission(actor):
+                        self._ignore_once(issue, f"labeler {actor!r} not on allowlist")
+                continue
+            await self._accept(issue, retry=retry)
+
+    async def _intake_authors(self) -> None:
+        allowlist = self._author_allowlist()
+        if not allowlist:
+            return
+        for issue in self.github.open_issues():
+            if issue.get("state", "open") != "open":
+                continue
+            author = self._author_login(issue)
+            if not login_allowed(author, allowlist):
+                # Allowlisted-author path only; labeled intake handles collaborators.
+                continue
+            base = f"job-gh-{issue['id']}"
+            if base in self.state["jobs"] or any(
+                    re.fullmatch(re.escape(base) + r"-r\d+", key) for key in self.state["jobs"]):
+                continue
+            await self._accept(issue, retry=False)
+
+    async def _accept(self, issue: dict, *, retry: bool) -> None:
+        base = f"job-gh-{issue['id']}"
+        related = {key: record for key, record in self.state["jobs"].items()
+                   if key == base or re.fullmatch(re.escape(base) + r"-r\d+", key)}
+        if not retry:
+            if base in related:
+                return
+            job_id = base
+        else:
+            # A provider pause resumes the same workflow/checkpoints. Other
+            # active jobs still block creating a fresh retry workflow.
+            active = [(key, record) for key, record in related.items() if not record["terminal"]]
+            if active:
+                if len(active) == 1 and self.github.approved(
+                        issue, self.retry_label, triggers=self.triggers):
+                    await self._resume_provider_pause(*active[0])
+                return
+            if base not in related or any(record.get("remove_retry_label") for record in related.values()):
+                return
+            attempt = max([int(key.rsplit("-r", 1)[1]) for key in related if key != base], default=0) + 1
+            job_id = f"{base}-r{attempt}"
+        # Freeze the original issue anew; later edits never change a running request.
+        feature = parse_issue_body(issue["title"], issue.get("body") or "", url=issue["html_url"],
+                                   labels=[item["name"] for item in issue.get("labels", [])])
+        try:
+            await self.client.start_workflow(
+                FactoryWorkflow.run, feature.model_dump(mode="json"), id=job_id,
+                task_queue=self.queue, id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+            )
+        except WorkflowAlreadyStartedError:
+            pass
+        record = {"number": issue["number"], "terminal": False}
+        if retry:
+            record["remove_retry_label"] = self.retry_label
+        self.state["jobs"][job_id] = record
+        self.save()
 
     async def _resume_provider_pause(self, job_id: str, record: dict) -> None:
         if record.get("remove_retry_label"):
@@ -238,15 +305,35 @@ class IssueBridge:
 async def watch_issues(client, args):
     if args.interval < 10:
         raise FactoryError("Issue polling interval must be at least 10 seconds")
+    triggers = None
+    label = getattr(args, "label", "factory:ready")
+    retry_label = getattr(args, "retry_label", "factory:retry")
+    policy_path = getattr(args, "policy", None)
+    if policy_path is not None:
+        from factory.governance.policy import load_policy
+
+        policy = load_policy(Path(policy_path))
+        triggers = policy.issue_triggers
+        label = triggers.ready_label
+        retry_label = triggers.retry_label
+        slug = getattr(args, "slug", "")
+        if triggers.slug and triggers.slug.lower() != slug.lower():
+            raise FactoryError(
+                f"issue_triggers.slug {triggers.slug!r} does not match watcher --slug {slug!r}"
+            )
     args.home.mkdir(parents=True, exist_ok=True)
     with (args.home / "issues.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise FactoryError("An issue bridge already owns this home") from None
-        bridge = IssueBridge(client, GitHubIssues(args.slug), args.home, args.task_queue, args.label,
-                             address=args.address, namespace=args.namespace, retry_label=args.retry_label)
-        print(f"Watching {args.slug}: label={args.label}, queue={args.task_queue}", flush=True)
+        slug = getattr(args, "slug", "owner/repo")
+        queue = getattr(args, "task_queue", "software-factory")
+        bridge = IssueBridge(client, GitHubIssues(slug), args.home, queue, label,
+                             address=getattr(args, "address", None),
+                             namespace=getattr(args, "namespace", None),
+                             retry_label=retry_label, triggers=triggers)
+        print(f"Watching {slug}: label={label}, queue={queue}", flush=True)
         while True:
             try:
                 await bridge.tick()

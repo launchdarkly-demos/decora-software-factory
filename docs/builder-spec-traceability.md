@@ -221,6 +221,16 @@ The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file l
 | Separate org policy/runtime; worker refuses mismatched issue_triggers.slug | `policy.decora-org.yaml`; worker start check | Covered |
 | §10/§11 org replay: external strips flag task; same plan under policy.decora.yaml still inserts/audits; triggers + job-id uniqueness | `tests/test_org_target.py` | Covered |
 
+## #34 / issue intake (spec-first)
+
+| Rule | Implementation and regression work | Status |
+| --- | --- | --- |
+| §9 R1 unrecognized/`##` sections and unused preamble preserved in order as hints; planner+reviewer payloads and prompts see them | `factory/intake/load.py:parse_issue_body`; `factory/harness/openai_agents.py:_feature_for_model`; `factory/agents/prompts.py` | Covered |
+| §9 R2 standalone `---`/`***`/`___` ends a section; following text is `Footer:` hint; fenced HR ignored | `factory/intake/load.py` | Covered |
+| §9 R3 `change_class` from first ChangeClass token; `change_type` keeps human text without footer | `factory/intake/load.py` | Covered |
+| §9 R4 flag-key and rollout parsing unchanged aside from R2 truncation | `factory/intake/load.py` | Covered |
+| §10/§11 org issue#3 body replay | `tests/test_issue34_intake.py`; `tests/fixtures/org_issue3_r1_body.md` | Covered |
+
 ## Safeguard calibration (r1-r7 sweep)
 
 | Rule | Implementation | Regression / evidence |

@@ -10,7 +10,8 @@ Rules:
 - Inspect relevant existing code/tests before planning; include observed paths in context_files.
 - Use read_file to inspect existing files you intend to change beyond the supplied excerpts.
   context_files must name existing inventory paths; new files belong only in files/tasks.
-- Honor the goal, scope, constraints, acceptance criteria, verification, and rollout request.
+- Honor the goal, scope, constraints, acceptance criteria, verification, rollout request,
+  and feature.hints (unrecognized issue sections, context, and footers preserved at intake).
 - Decompose changes into ordered tasks with unique IDs, files, dependencies on earlier
   tasks, task-specific acceptance, and optional quick_test_targets (pytest paths/selectors).
   Each task must be small enough for ONE Builder response. List all editable files in files.
@@ -122,6 +123,8 @@ Inspect the actual diff and use read-only repository tools to check surrounding 
 Return your own ReviewReport verdict, evidence-backed findings, risks, and summary.
 Check every acceptance criterion and plan task, including UI/API integration, isolation,
 backward compatibility, migration behavior, default-off flags when required, and real tests.
+Honor feature.hints (unrecognized issue sections, context, and footers) as request context
+the plan and diff must satisfy; do not ignore Problem/Background/Notes-style sections.
 Use change_class and rollout_rules to check flags only where required or explicitly optional.
 When flag_policy.enabled is false, missing new flags or guarded rollout are not findings.
 When flag_policy.management is external, missing factory-owned flags or guarded rollout are

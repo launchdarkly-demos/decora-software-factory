@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s #22, #23, #24, #25, #26, #27, #28 and #29 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s #22, #23, #24, #25, #26, #27, #28, #29 and #34 rules (Oct 19, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18), `job-gh-5913682653` (Oct 18) and org `job-gh-5918876477` (Oct 19).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -248,6 +248,13 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 3. Job ID: `job-gh-<issue.id>`.
 4. Temporal rejects duplicate IDs, and the ledger (`issues.json`) remembers every job it has accepted.
 
+**Issue body parsing** (`parse_issue_body`). Recognized headings map as today: Goal/Summary → summary; Acceptance criteria/Acceptance → acceptance bullets; Rollout, Flag, Flag key → rollout/flag fields; Hints → hint bullets; Context → a context hint; Change type → change_type/change_class; Scope and constraints → scope; Verification → verification; User facing → user_facing. HTML comments are stripped before parsing. In addition:
+
+1. **R1 — no silent loss.** Every non-empty section whose heading is not a recognized field is preserved, in body order, as a context hint for the planner and reviewer, formatted `<Original Heading>: <text>`. Text before the first heading that is not used as the summary is preserved as a hint as well. Recognized fields keep their current mapping. The frozen `FeatureRequest.hints` (including these) must appear in both planner and reviewer model payloads; prompts must tell those agents to honor issue hints/context, not only the named fields.
+2. **R2 — horizontal-rule footers.** A line consisting only of `---` (or `***` / `___`) ends the current structured section. Text after it, up to the next `## ` heading, becomes a `Footer: …` context hint. It must never be appended to change_type, rollout, verification, scope, or any other recognized field. A `---` / `***` / `___` line inside a fenced code block is not a section break.
+3. **R3 — change_class token.** `## Change type` resolves `change_class` from the first token that matches a `ChangeClass` value (case-insensitive; separators such as comma, space, or period), e.g. `docs_only, low risk.` → `docs_only`. `change_type` keeps the human text (without any footer from R2).
+4. **R4 — flags and rollout.** `issue_flag_keys` / flag-key parsing behavior is unchanged. Rollout parsing is unchanged except that R2 may truncate the rollout section before a footer.
+
 **Status.**
 - There's one comment per job, marked `<!-- software-factory:<job> -->` and edited in place.
 - Every command it prints must include the watcher's real `--address`, and `--namespace` when it isn't the default (#18).
@@ -302,6 +309,7 @@ The factory may serve more than one checkout at once. Behavior is **policy-drive
 | #29 / `job-gh-5873513712-r7` | Guard rejected rewrites of a same-job stub; E9 asked Builder to change plan fields; stale task scope survived plan revisions | §4 base-content-only guard and actionable E9; §8 plan-file consistency; §11 replay_r7 |
 | r8 / `job-gh-5873513712-r8` | Policy-fixed key `decora-room-home-migration` treated as issue-supplied existing flag; GET 404 paused ensure_flag after verification | §8 ensure_flag: only intake `feature.flag_key` must pre-exist; fixed/planner keys are created when missing; §11 replay_r8 |
 | Org / Release Autopilot | Factory planned/audited/provisioned flags on a repo where LaunchDarkly Release Autopilot already owns them | Multiple targets + `flags.management=external`; §11 org-target replay |
+| #34 / org `job-gh-5918876477` | Unrecognized `## Problem` (five missing suites) dropped at intake; `---` footer leaked into `change_type` so `change_class` was unset | §9 R1–R4 issue body parsing; §11 issue34 intake replay |
 
 ## 11. Acceptance criteria
 
@@ -336,6 +344,8 @@ The factory may serve more than one checkout at once. Behavior is **policy-drive
 **r8 / replay_r8.** With a fake LaunchDarkly client: a policy-fixed key and GET 404 creates a boolean temporary default-off flag and the job proceeds past ensure_flag; an issue-supplied key and 404 still raises the existing-flag error; an existing flag (GET 200) is reused unchanged.
 
 **Org target / `flags.management=external`.** Replay an org job (mock harness; plan with a planner `flag_key` and a `provision_flag`-like task) under `policy.decora-org.yaml`: no flag task, `flag_key` stripped, no audit, `ensure_flag` skipped with zero LaunchDarkly client calls even in live mode, job reaches DONE with a draft PR body mentioning Release Autopilot. The same plan under `policy.decora.yaml` still requires and inserts the flag task and audits default-off. Cover policy validation errors, `issue_triggers` (allowlisted author without label once; non-allowlisted ignored; label by non-allowlisted collaborator ignored when `labelers` set; allowlisted writer triggers; bot `[bot]` matching; watcher without `--policy` unchanged), and job-id non-collision across targets.
+
+**#34 / issue intake.** Replay `tests/fixtures/org_issue3_r1_body.md` (org live run 1 body): a hint contains `Problem:` and all five suite names; `change_class == docs_only`; `change_type` has neither `---` nor the footer sentence; footer text appears as a `Footer:` hint; acceptance has four items. Cover unknown-section order, known-section stability, Context-without-duplication, fenced `---` not breaking sections, and planner/reviewer payloads that include the Problem text.
 
 **Live definition of done** (decor-agent, real model, `--ld live --push`):
 - A maintainer labels an issue with a high-risk migration plan (the #8/#12 room-home migration). The watcher starts the job without anyone typing a job ID.

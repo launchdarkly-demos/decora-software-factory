@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s four #22 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s #22 and #23 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -86,7 +86,13 @@ All checks run on the fully staged proposal **before any file is written**. If a
 5. **Files added to the plan automatically (no pause, no correction)**: any path that passes checks 2 and 3 but isn't in the plan is added to the plan and recorded in `auto_added_files`, together with the task that added it. This includes `__init__.py` files for new packages. The rule covers create, write, edit and the destination of a move.
 6. **Module names (correction)**: a new `.py` path must have valid Python names for the module and every package folder above it (no leading digits, no keywords).
 
+Before quick or full verification, run `ruff check --fix` with safe fixes only, then `ruff format`, on changed `.py` files after syntax passes. Include these automatic edits in the task checkpoint commit. Respect the target repository's Ruff configuration; otherwise isolate Ruff from the factory/ancestor config and use correctness rules `E9` and `F` minus auto-fixable rules for the lint gate. Never gate line length without repository configuration.
+
+Builder quick-test commands must be reduced to pytest targets; refuse other commands. All quick tests use the verification gate configuration (§8).
+
 ## 5. Errors
+
+All tool executions set `NO_COLOR=1`; pytest uses `--color=no` and Ruff check uses `--output-format=concise`. Strip ANSI sequences from every report before logging or Builder feedback, including E10, E13 and E15.
 
 Each error belongs to one of three classes:
 - **Correction**: the same task is retried with the feedback, using 1 of `per_task_retries`, except failures reported by full verification (E14/E15), which use the independent job-level `verify_retries`.
@@ -156,12 +162,14 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 
 **Quick tests.**
 - Run only after a checkpoint reporting `task_complete=true`, on that task's `quick_test_targets`. Never run on partial parts, including proposal commands that are quick tests.
+- Every quick test runs through `VerificationGate.run_quick`, using generated `pytest-gate.ini`, `--rootdir <worktree>` and cwd = worktree. Builder-supplied pytest commands contribute targets only; discard pytest options (including config/root overrides), and refuse non-pytest commands.
 - Route failures to the module-under-test owner below (E13), using that owner's `per_task_retries`. Exit 5 (no tests collected) is a correction to the test-file owner naming the target file; there is no failing test from which to infer a module defect.
 - If the owning task's retries are spent, record the failure as advisory and continue to full verification.
 
 **Full verification.**
 - Run after every task is done; repeat after routed fixes until it passes or the independent job-level `verify_retries` budget is exhausted (default 3 retries after the initial run).
 - Every planned file must exist (E14).
+- Safe Ruff fixes and formatting of changed Python files are already committed in the task checkpoint before verification. Gate changed Python files using repository Ruff config when present; otherwise use isolated correctness rules `E9` and `F` minus auto-fixable rules. No line-length gate without repository config.
 - Run `pytest` on plan targets using `pytest-gate.ini` with the worktree root on `pythonpath`; then configured linters. Exit 4 names the missing path.
 - Each failed full verification reopens the owning task with E15 and consumes one job-level verification retry, without changing that task's `per_task_retries`. Persist the used count and routing history by task. After all allowed retries fail, E22 ends the job. Ordinary Builder corrections and the job call cap retain their own budgets.
 
@@ -236,6 +244,7 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 | #20 (b) | Syntax errors found late, without context | §4.4 parse before writing (E9) |
 | #18 | Watcher comment's command reached the wrong server | §9 commands include the real address |
 | #22 / `job-gh-5873513712-r1` | Tests-only task exhausted quick retries for migration defects; full verify hit E19; arrow anchor mangled to control; partial quick test exit 5 | §3 normalized unique fallback and escaped E5; §5 E13/E15/E22; §6 independent verify budget; §8 module routing and completion-only quick tests |
+| #23 / `job-gh-5873513712-r2` | Raw quick pytest inherited factory config; style lint exhausted verify retries; ANSI leaked into feedback | §4/§8 gate-only quick tests, safe fixes + format in checkpoint, correctness lint unless repo config; §5 plain tool output |
 | Ops | Live runs blocked by manual job IDs, port and address mix-ups, project key changes | §9 rerun via label; §11 live definition of done |
 
 ## 11. Acceptance criteria
@@ -259,6 +268,8 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 14. **#22 anchors**: mangled control/Unicode anchor uses a unique normalized original span, logs fallback, and reaches DONE; ambiguous fallback rejects atomically and E5 escapes closest lines.
 15. **#22 timing**: a partial part with no collected tests runs no quick tests; completion with exit 5 produces a correction naming the file, then reaches DONE.
 16. **`replay_r1`**: reproduce `job-gh-5873513712-r1` end to end with its six-task plan, tests-only task 6 exposing task 5 migration defects, arrow/control anchor and partial no-tests part; reach DONE with a persisted draft PR record.
+
+17. **`replay_r2` (#23)**: reproduce `job-gh-5873513712-r2` end to end in the mock harness with raw Builder pytest commands, long lines, an unused test import and ANSI-colored output. Quick tests expose and route the actual store/home-id bug with budget left; safe fixes are checkpointed, feedback is plain, and the run reaches DONE with a persisted draft PR record. Unit tests cover command refusal/target extraction, gate isolation/cwd, safe fixes/config handling, lint scope and color suppression/stripping.
 
 **Live definition of done** (decor-agent, real model, `--ld live --push`):
 - A maintainer labels an issue with a high-risk migration plan (the #8/#12 room-home migration). The watcher starts the job without anyone typing a job ID.

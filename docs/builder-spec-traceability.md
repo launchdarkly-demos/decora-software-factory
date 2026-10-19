@@ -134,3 +134,13 @@ Live acceptance (§11) is outside this mock-only session and has not been claime
 | §5 E14/E15/E22 / §6 independent job verify_retries=3, persisted usage and per-task routes, explicit fatal list | [policy.py:Policy.verify_retries](../factory/governance/policy.py); [models.py:JobState](../factory/models.py); [machine.py:_verify](../factory/orchestrator/machine.py); [summary.py:build_summary](../factory/observability/summary.py); [pr.py:render_pr](../factory/publish/pr.py) | [test_replay_13_verify_budget_survives_spent_quick_budget](../tests/test_issue22_replays.py); `test_verify_budget_fails_only_at_e22` (0, 1, 3 retries); updated full-verification budget regressions | Covered |
 | §8 completion-only quick targets and proposal commands; exit 5 names test file | [machine.py:_build](../factory/orchestrator/machine.py); [apply.py:apply_proposal](../factory/agents/apply.py); [models.py:BuildResult.quick_test_commands](../factory/models.py) | [test_replay_15_partial_no_tests_then_completed_exit5_names_file](../tests/test_issue22_replays.py); `test_replay_r1_six_tasks_migration_repair_reaches_draft` | Covered |
 | §10 #22/r1 / §11 replay_r1 original six-task plan, migration defects, partial no-tests command, mangled arrow anchor → DONE/draft | [issue_22_r1_plan.json](../tests/replays/issue_22_r1_plan.json); [test_replay_r1_six_tasks_migration_repair_reaches_draft](../tests/test_issue22_replays.py) | Real Git checkpoints, pytest, formatter, verifier, deterministic review and local publisher; original high-risk plan gate approved in the harness; persisted pr.json checked | Covered |
+
+## #23 / r2 rules (spec-first)
+
+| Spec rule | Implementation and regression work | Status |
+| --- | --- | --- |
+| §4/§8 All quick tests use generated gate config, worktree root/cwd; Builder commands become pytest targets; refuse other commands | `machine.py`, `gate.py`; #23 target/refusal and isolation unit tests | Required by #23 |
+| §4/§8 Safe Ruff fixes + format changed Python before verification, in task checkpoint | `staging.py`, `formatting.py`; checkpoint/config/safe-fix tests | Required by #23 |
+| §8 Correctness-only default lint (E9/F minus auto-fixable); honor repo config; no default line length | `gate.py`; default and configured lint tests | Required by #23 |
+| §5 NO_COLOR, pytest color=no, concise Ruff, ANSI stripped from reports and feedback (E10/E13/E15) | Tool execution/report boundary; color and feedback tests | Required by #23 |
+| §10/§11 r2 reaches DONE with persisted draft PR | `test_issue23_replays.py:test_replay_r2` | Required by #23 |

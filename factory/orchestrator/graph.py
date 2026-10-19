@@ -7,9 +7,9 @@ from factory.models import Stage
 LEGAL: dict[Stage, frozenset[Stage]] = {
     Stage.INTAKE: frozenset({Stage.CONTEXT, Stage.FAILED}),
     Stage.CONTEXT: frozenset({Stage.PLAN, Stage.FAILED}),
-    Stage.PLAN: frozenset({Stage.GOVERN_PLAN, Stage.FAILED}),
+    Stage.PLAN: frozenset({Stage.GOVERN_PLAN, Stage.AWAIT_HUMAN, Stage.FAILED}),
     Stage.GOVERN_PLAN: frozenset({Stage.PLAN, Stage.BUILD, Stage.AWAIT_HUMAN, Stage.FAILED}),
-    Stage.AWAIT_HUMAN: frozenset({Stage.PLAN, Stage.BUILD, Stage.ENSURE_FLAG, Stage.FAILED}),
+    Stage.AWAIT_HUMAN: frozenset({Stage.PLAN, Stage.BUILD, Stage.REVIEW, Stage.ENSURE_FLAG, Stage.FAILED}),
     Stage.BUILD: frozenset({Stage.VERIFY, Stage.BUILD, Stage.AWAIT_HUMAN, Stage.FAILED}),
     Stage.VERIFY: frozenset({Stage.ENSURE_FLAG, Stage.BUILD, Stage.AWAIT_HUMAN, Stage.FAILED}),
     Stage.ENSURE_FLAG: frozenset({Stage.REVIEW, Stage.AWAIT_HUMAN, Stage.FAILED}),

@@ -80,7 +80,9 @@ def test_replay_r3(tmp_path, repair):
     plan = low_plan(flag_key=KEY, files=[module, 'app/flags.py', test],
         test_targets=[test], tasks=[
             PlanTask(id='model_extend_home', description='Migration compatibility', files=[module]),
-            PlanTask(id='add_launchdarkly_flag', description='Register migration flag', files=['app/flags.py']),
+            PlanTask(id='add_launchdarkly_flag', description='Register migration flag', files=['app/flags.py'],
+                     acceptance=[f"Define KEY = '{KEY}' and FLAG_DEFAULT = False in app/flags.py.",
+                                 'Gate new behavior with get_flag(KEY, context, default=FLAG_DEFAULT).']),
             PlanTask(id='migration_tests', description='Migration tests', files=[test],
                      depends_on=['model_extend_home', 'add_launchdarkly_flag']),
         ])

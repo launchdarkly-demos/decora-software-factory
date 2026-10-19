@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s #22, #23, #24, #25  #26, #27 and #28 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s #22, #23, #24, #25, #26, #27 and #28 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -239,6 +239,7 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 **Reruns.**
 - Today: open a new issue that links the old one and add the label (the documented path).
 - Spec: add a supported rerun. A maintainer adds the `factory:retry` label to the original issue, and the watcher starts `job-gh-<issue.id>-r<n>`, records it in the ledger, posts a new status comment and removes the label.
+- For an active provider billing/credentials pause (#27), an authorized `factory:retry` label signals `continue` with the current pause ID to the same workflow and removes the label; it preserves checkpoints and does not start a fresh run. Other active jobs still block reruns.
 - The ledger must never be edited by hand.
 
 **Outages.** If GitHub or the watcher goes down, jobs keep running in Temporal. A failed sync is retried on the next poll. An empty `FactoryError` log line isn't acceptable; logs must say which job failed and why.
@@ -265,9 +266,7 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 | #24 / `job-gh-5873513712-r3` | Default-off evaluations rejected; flag repairs routed to tests-only task three times, ending at E22 | §8 both evidence forms, prompt convention and flag-owner routing |
 | Ops | Live runs blocked by manual job IDs, port and address mix-ups, project key changes | §9 rerun via label; §11 live definition of done |
 | #25 / `job-gh-5873513712-r4` | Escaped non-ASCII payloads garbled `Room→Home` into `Room\x192Home`; multi-line feedback hid divergence and full rejected anchors were lost | §2 verbatim payloads; §3 unique escape-artifact fallback and ASCII code anchors; §5 divergence feedback; §7 redacted rejected-edit receipts |
-
 | #26 / `job-gh-5873513712-r5` | `app/store.py` lost its first 238 lines (the `-1,241 +1,3` hunk); collection errors went to tests; reopened test cutoff spent retries; flag key drift | §4 destructive guard and checkpoint restore; §8 per-checkpoint imports and innermost production owner; §2 bounded test normalization; E1 split preservation; §8 fixed policy key |
-
 | #27 / `job-gh-5873513712-r6` | Three RateLimitErrors spent task retries and FAILED after five checkpoints | §5 provider classification, header-aware backoff and current-stage pause preserving checkpoints |
 | #28 / `job-gh-5873513712-r6` | Required key existed without a production flag task; human plan send-back needed | §8 deterministic required flag task before tests, governance check and receipts |
 

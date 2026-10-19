@@ -220,7 +220,7 @@ def test_plan_validation_reports_all_file_defects_together(tmp_path):
     assert decision.retry_plan
     for path in ['server.py', 'web/site.css', 'web/styles.css']:
         assert path in decision.reason
-    assert plan.files == []  # Validation must not silently expand approved scope.
+    assert plan.files == ['app/flags.py']  # Only the approved deterministic flag module is added.
 
 
 def test_missing_infrastructure_pauses_but_omitted_profile_selection_repairs(tmp_path):

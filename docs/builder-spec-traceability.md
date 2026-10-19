@@ -184,6 +184,6 @@ The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file l
 | Rule | Implementation | Evidence |
 |---|---|---|
 | #27 transient 429 classification, safe code extraction and header-aware capped backoff | `factory/harness/openai_agents.py`, `factory/errors.py`, `factory/orchestrator/machine.py` | `tests/test_issue27_28_replays.py`: classification and replay_r6 |
-| #27 billing/auth and exhausted infrastructure pause at current stage; checkpoints survive continue | same; watcher renders pause question with provider code | replay_r6 plus PLAN/REVIEW and status coverage |
+| #27 billing/auth and exhausted infrastructure pause at current stage; checkpoints survive continue | `factory/github/issues.py` resumes provider pauses on an authorized retry label and renders the provider code | replay_r6 plus PLAN/REVIEW and status coverage |
 | #28 exactly one required production flag owner, inserted before tests without send-back | `factory/plan_normalization.py`, `factory/governance/policy.py` | replay_r6 normalization, idempotence and ownership tests |
 | #28 insertion logged, saved in plan receipt and PR body | orchestrator plan logging, ImplementationPlan, PR renderer | replay receipt and PR assertions |

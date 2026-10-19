@@ -18,6 +18,7 @@ class ApprovalRules(BaseModel):
 
 
 class FlagRules(BaseModel):
+    module: str = "app/flags.py"
     enabled: bool = False
     key_pattern: str = r"^decora-[a-z0-9-]+$"
     must_default_off: bool = True
@@ -224,7 +225,7 @@ def guarded_rollout_required(policy: Policy, job: JobState) -> bool:
 
 
 def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Decision:
-    from factory.plan_normalization import normalize_test_tasks
+    from factory.plan_normalization import normalize_flag_task, normalize_test_tasks
     from factory.verification.profiles import prerequisites, task_problems
 
     normalize_test_tasks(plan)
@@ -265,7 +266,11 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
                                 reason="Guarded rollout metric must be in allowed_metric_keys.",
                                 resume_stage="plan")
             plan.guarded_rollout_metric = metric
+    normalize_flag_task(policy, job, plan)
     repairs = task_problems(plan)
+    if flag_required(policy, job, plan) and keys and not any(
+            task.id == plan.flag_task_id for task in plan.tasks):
+        repairs.append("Required flag must have a production task owner before BUILD.")
     if job.context and job.context.file_inventory:
         missing = set(plan.context_files) - set(job.context.file_inventory)
         if missing:

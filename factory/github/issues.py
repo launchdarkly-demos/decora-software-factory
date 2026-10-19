@@ -160,10 +160,14 @@ class IssueBridge:
                         continue
                     job_id = base
                 else:
-                    # Only a finished original job can be retried, with no active retry
-                    # or outstanding label cleanup (including after a lost DELETE response).
-                    if base not in related or any(not record["terminal"] or record.get("remove_retry_label")
-                                                  for record in related.values()):
+                    # A provider pause resumes the same workflow/checkpoints. Other
+                    # active jobs still block creating a fresh retry workflow.
+                    active = [(key, record) for key, record in related.items() if not record["terminal"]]
+                    if active:
+                        if len(active) == 1 and self.github.approved(issue, label):
+                            await self._resume_provider_pause(*active[0])
+                        continue
+                    if base not in related or any(record.get("remove_retry_label") for record in related.values()):
                         continue
                     attempt = max([int(key.rsplit("-r", 1)[1]) for key in related if key != base], default=0) + 1
                     job_id = f"{base}-r{attempt}"
@@ -198,6 +202,20 @@ class IssueBridge:
                 errors.append(f"{job_id}: {type(exc).__name__}: {exc}")
         if errors:
             raise FactoryError(f"Could not sync {len(errors)} job(s); retry next poll: " + "; ".join(errors))
+
+    async def _resume_provider_pause(self, job_id: str, record: dict) -> None:
+        if record.get("remove_retry_label"):
+            return
+        handle = self.client.get_workflow_handle(job_id)
+        snapshot = await handle.query(FactoryWorkflow.snapshot, rpc_timeout=timedelta(seconds=10))
+        job = snapshot.get("job", {})
+        if (job.get("stage") != "await_human" or not (job.get("question") or "").startswith(
+                "Provider billing/credentials problem:")):
+            return
+        await handle.signal(FactoryWorkflow.answer, args=[snapshot["pause_id"], "continue"],
+                            rpc_timeout=timedelta(seconds=10))
+        record["remove_retry_label"] = self.retry_label
+        self.save()
 
     async def sync_job(self, job_id: str, record: dict):
         # Keep following accepted jobs even after the issue is closed or its label removed.

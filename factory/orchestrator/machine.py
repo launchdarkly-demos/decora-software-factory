@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import re
 import sys
 import time
@@ -11,7 +12,14 @@ from pathlib import Path
 from factory.clock import Clock, SystemClock
 from factory.command_output import strip_ansi
 from factory.context.repo import analyze_repo
-from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, InfrastructureError, SafetyError
+from factory.errors import (
+    FactoryError,
+    GovernanceError,
+    IncompleteBuildError,
+    InfrastructureError,
+    ProviderBlockedError,
+    SafetyError,
+)
 from factory.execution.portable import PortableWorkspace
 from factory.execution.worktree import WorktreeManager
 from factory.governance.flags import is_production_path
@@ -66,7 +74,9 @@ class Factory:
         publisher_runner=None,
         id_factory: Callable[[], str] | None = None,
         on_event: Callable[[JobEvent], None] | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
+        self.sleep = sleep or time.sleep
         self.target_repo = target_repo.resolve()
         self.home = home
         self.policy = policy
@@ -176,10 +186,27 @@ class Factory:
                 job.worktree = self.execution.create(self.target_repo, job.id)
             self.store.save(job)
 
+    def _backoff(self, exc: BaseException, attempt: int) -> None:
+        delay = max(float(getattr(exc, "retry_after", None) or 0), 2 ** attempt)
+        self.sleep(min(60., delay + random.uniform(0, min(delay * .25, 1.))))
+
     def _bounded(self, job: JobState, handler: Callable[[JobState], Transition]) -> Transition:
         start = self.clock.now()
         try:
-            transition = handler(job)
+            for attempt in range(4):
+                start = self.clock.now()
+                try:
+                    transition = handler(job)
+                    break
+                except (InfrastructureError, TimeoutError, ConnectionError) as exc:
+                    self._emit(job, "specialist_agents", f"E18: {exc}; infrastructure attempt {attempt + 1}")
+                    if attempt == 3:
+                        return Transition(stage=Stage.AWAIT_HUMAN,
+                                          detail=f"Provider infrastructure retries exhausted: {exc}. Answer continue.",
+                                          resume_stage=job.stage)
+                    self._backoff(exc, attempt)
+        except ProviderBlockedError as exc:
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=job.stage)
         except FactoryError as exc:
             transition = Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
         limit = self.policy.timeout_for(job.stage.value)
@@ -255,7 +282,11 @@ class Factory:
         if job.plan is None:
             return Transition(stage=Stage.FAILED, detail="no plan", error="no plan")
         previous_key = job.plan.flag_key
+        previous_notes = set(job.plan.normalization_notes)
         decision = review_plan(self.policy, job.plan, job)
+        for note in job.plan.normalization_notes:
+            if note not in previous_notes:
+                self._emit(job, "governance", note)
         if job.fixed_flag_key and previous_key != job.plan.flag_key:
             self._emit(job, "governance", "Fixed flag key override",
                        proposed_key=previous_key or "<none>", fixed_key=job.plan.flag_key or "<none>")
@@ -308,13 +339,15 @@ class Factory:
                     result = self.harness.build(job, tools)
                     break
                 except (InfrastructureError, TimeoutError, ConnectionError) as exc:
-                    self._emit(job, "specialist_agents", f"E18 {job.id}: {type(exc).__name__}; "
+                    self._emit(job, "specialist_agents", f"E18 {job.id}: {exc}; "
                                f"infrastructure attempt {infrastructure_attempt + 1}")
                     if infrastructure_attempt == 3:
                         return Transition(stage=Stage.AWAIT_HUMAN,
-                                          detail="Builder infrastructure retries exhausted; retry this call.",
+                                          detail=f"Builder infrastructure retries exhausted: {exc}; retry this call.",
                                           resume_stage=Stage.BUILD)
-                    time.sleep(2 ** infrastructure_attempt)
+                    self._backoff(exc, infrastructure_attempt)
+        except ProviderBlockedError as exc:
+            return Transition(stage=Stage.AWAIT_HUMAN, detail=str(exc), resume_stage=Stage.BUILD)
         except SafetyError as exc:
             return Transition(stage=Stage.FAILED, detail=str(exc), error=str(exc))
         except IncompleteBuildError as exc:

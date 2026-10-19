@@ -36,7 +36,7 @@ def test_verify_failure_returns_to_the_builder_then_passes(tmp_path: Path) -> No
 
     assert job.stage == Stage.DONE
     assert job.verify_retries_used == 1
-    assert len(job.builds) == 2
+    assert len(job.builds) == 3
     assert job.pr is not None and job.pr.dry_run
     assert job.pr.url is None
 
@@ -125,7 +125,7 @@ def test_review_changes_requested_loops_to_the_builder(tmp_path: Path) -> None:
 
     assert job.stage == Stage.DONE
     assert job.retries["review"] == 1
-    assert len(job.builds) == 2
+    assert len(job.builds) == 3
 
 
 def test_build_timeout_retries_infrastructure_then_pauses(tmp_path: Path, monkeypatch) -> None:

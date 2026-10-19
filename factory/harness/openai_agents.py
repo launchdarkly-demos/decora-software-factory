@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
+import time
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -11,7 +14,14 @@ from pydantic import ValidationError
 from factory.agents.apply import apply_proposal
 from factory.agents.prompts import BUILDER_INSTRUCTIONS, PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
 from factory.context.repo import RepositoryReader
-from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, InfrastructureError
+from factory.errors import (
+    FactoryError,
+    GovernanceError,
+    IncompleteBuildError,
+    InfrastructureError,
+    ProviderBlockedError,
+    ProviderTransientError,
+)
 from factory.governance.policy import Policy, fixed_flag_key, flag_required, selected_flag_key
 from factory.harness.repository_tools import repository_tools
 from factory.harness.tokens import charge_provider
@@ -66,7 +76,7 @@ class OpenAIAgentsHarness:
         try:
             result = _run_agent(agent, payload)
         except Exception as exc:
-            raise FactoryError(f"Planner call failed: {exc.__class__.__name__}") from None
+            raise _provider_failure(exc) or FactoryError(f"Planner call failed: {exc.__class__.__name__}") from None
         charge_provider(job, result, payload, "")
         output = result.final_output
         if isinstance(output, ImplementationPlan):
@@ -150,7 +160,7 @@ class OpenAIAgentsHarness:
         try:
             result = _run_agent(agent, payload)
         except Exception as exc:
-            raise FactoryError(f"Reviewer call failed: {exc.__class__.__name__}") from None
+            raise _provider_failure(exc) or FactoryError(f"Reviewer call failed: {exc.__class__.__name__}") from None
         charge_provider(job, result, payload, "")
         output = result.final_output
         return output if isinstance(output, ReviewReport) else ReviewReport.model_validate(output)
@@ -259,9 +269,80 @@ def _validation_feedback(exc: ValueError) -> str:
     return "Proposal schema invalid. Return one complete BuildProposal."
 
 
-def _builder_failure(exc: BaseException, tokens: int = 16000, turns: int = 40) -> FactoryError:
-    if isinstance(exc, (IncompleteBuildError, InfrastructureError)):
+def _retry_after(exc: BaseException) -> float | None:
+    headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
+    delays = []
+    for name, raw in headers.items():
+        name = name.lower()
+        value = str(raw).strip().lower()
+        try:
+            if name == "retry-after":
+                try:
+                    delay = float(value)
+                except ValueError:
+                    delay = parsedate_to_datetime(str(raw)).timestamp() - time.time()
+            elif name.startswith("x-ratelimit-reset-"):
+                parts = re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h)", value)
+                if parts and ''.join(n + unit for n, unit in parts) == value:
+                    delay = sum(float(n) * {"ms": .001, "s": 1, "m": 60, "h": 3600}[unit]
+                                for n, unit in parts)
+                else:
+                    delay = float(value)
+                    if delay > 1_000_000_000:
+                        delay -= time.time()
+            else:
+                continue
+            if math.isfinite(delay):
+                delays.append(max(0., delay))
+        except (ValueError, TypeError, OverflowError):
+            continue
+    return max(delays) if delays else None
+
+
+def _provider_failure(exc: BaseException) -> FactoryError | None:
+    if isinstance(exc, (InfrastructureError, ProviderBlockedError)):
         return exc
+    code = getattr(exc, "code", None)
+    bodies = [getattr(exc, "body", None)]
+    response = getattr(exc, "response", None)
+    if not code and response is not None:
+        try:
+            bodies.append(response.json())
+        except (ValueError, TypeError, AttributeError):
+            pass
+    for body in bodies:
+        if not code and isinstance(body, dict):
+            error = body.get("error", body)
+            if isinstance(error, dict):
+                code = error.get("code") or error.get("type")
+    # Only emit a bounded identifier, never the exception text, body or headers.
+    code = code if isinstance(code, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", code) else None
+    from factory.tools.safety import redact_secrets
+
+    if code and redact_secrets(code) != code:
+        code = None
+    status = getattr(exc, "status_code", None) or getattr(response, "status_code", 0) or 0
+    if status in (401, 403):
+        return ProviderBlockedError(code or f"http_{status}")
+    if status == 429 or type(exc).__name__ == "RateLimitError":
+        if code and (code == "insufficient_quota" or any(
+                word in code.lower() for word in ("credit", "billing", "payment"))):
+            return ProviderBlockedError(code)
+        return ProviderTransientError(code or "rate_limit_exceeded", _retry_after(exc))
+    transport_markers = ("timeout", "connection", "connecterror", "networkerror", "readerror", "writeerror",
+                         "protocolerror", "internalserver")
+    if isinstance(exc, (TimeoutError, ConnectionError)) or status >= 500 or any(
+        marker in type(exc).__name__.lower() for marker in transport_markers
+    ):
+        return ProviderTransientError(code or type(exc).__name__, _retry_after(exc))
+    return None
+
+
+def _builder_failure(exc: BaseException, tokens: int = 16000, turns: int = 40) -> FactoryError:
+    if isinstance(exc, IncompleteBuildError):
+        return exc
+    if provider := _provider_failure(exc):
+        return provider
     text = str(exc).lower()
     if exc.__class__.__name__ == "MaxTurnsExceeded":
         return IncompleteBuildError(f"You ran out of turns ({turns}). The current file text is included; "
@@ -271,13 +352,6 @@ def _builder_failure(exc: BaseException, tokens: int = 16000, turns: int = 40) -
         return IncompleteBuildError(_cutoff_feedback(tokens))
     if isinstance(exc, ValidationError):
         return FactoryError(_validation_feedback(exc))
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", 0) or 0
-    transport_markers = ("timeout", "connection", "connecterror", "networkerror", "readerror", "writeerror",
-                         "protocolerror", "internalserver")
-    if isinstance(exc, (TimeoutError, ConnectionError)) or status >= 500 or any(
-        marker in type(exc).__name__.lower() for marker in transport_markers
-    ):
-        return InfrastructureError(f"Builder infrastructure error: {type(exc).__name__}")
     return FactoryError(f"Builder call failed: {exc.__class__.__name__}. Return one complete BuildProposal.")
 
 
@@ -290,7 +364,7 @@ def _run_agent(agent, payload: str, *, max_turns: int = 20, timeout: float | Non
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    client = AsyncOpenAI(max_retries=0, timeout=timeout) if timeout is not None else AsyncOpenAI()
+    client = AsyncOpenAI(max_retries=0, timeout=timeout) if timeout is not None else AsyncOpenAI(max_retries=0)
     try:
         def cancel_call():
             for task in asyncio.all_tasks(loop):

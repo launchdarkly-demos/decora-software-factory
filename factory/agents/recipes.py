@@ -84,7 +84,7 @@ def room_mood_proposal(job: JobState, tools: ToolLayer) -> BuildProposal:
                 path="app/flags.py",
                 kind="replace",
                 old=FLAGS_NEEDLE,
-                new=FLAGS_NEEDLE + 'ROOM_MOOD_FLAG = "decor-room-mood"\n',
+                new=FLAGS_NEEDLE + 'ROOM_MOOD_FLAG = "decor-room-mood"\nFLAG_DEFAULT = False\n',
             )
         )
     if "room_mood_payload" not in server:

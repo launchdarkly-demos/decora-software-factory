@@ -82,6 +82,8 @@ class PlanTask(BaseModel):
 
 
 class ImplementationPlan(BaseModel):
+    flag_task_id: str | None = None
+    normalization_notes: list[str] = Field(default_factory=list)
     change_class: ChangeClass | None = None
     guarded_rollout_metric: str | None = None
     summary: str

@@ -148,6 +148,8 @@ def render_pr(job: JobState, diff: str, policy: Policy | None = None) -> str:
             lines.extend(["", "Planned tasks:"])
             for task in plan.tasks:
                 lines.append(f"- {task.id}: {task.description} (depends on: {', '.join(task.depends_on) or 'none'})")
+        if plan.normalization_notes:
+            lines.extend(["", "Plan normalization:", *[f"- {note}" for note in plan.normalization_notes]])
         if plan.context_files:
             lines.append("")
             lines.append("Context files the planner saw:")

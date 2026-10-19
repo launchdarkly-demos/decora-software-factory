@@ -175,7 +175,8 @@ def test_e18_retries_three_times_with_backoff_without_task_charge(tmp_path, monk
     job = make_factory(tmp_path, repo, ScriptedHarness([queued_plan(1)], builds=[build]),
                        verifier=ScriptedVerifier([passed_verify()])).run(feature())
     assert job.stage == Stage.DONE, job.error
-    assert delays == [1, 2, 4] and calls == ['T0'] * 4
+    assert all(base <= delay <= base + 1 for base, delay in zip([1, 2, 4], delays))
+    assert len(delays) == 3 and calls == ['T0'] * 4
     assert not job.task_retries and not job.task_split_attempts
     assert job.builder_calls == 4
     assert sum('E18 ' + job.id in event.message for event in job.events) == 3

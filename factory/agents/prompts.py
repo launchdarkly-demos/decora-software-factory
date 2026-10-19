@@ -34,6 +34,7 @@ Rules:
 - Emit change_class: user_facing_behavior, ui_cosmetic, backend_internal, data_migration,
   refactor, docs_only, tests_only, config_ci, or dependency. Honor feature/label overrides.
   Do not infer flags from user_facing. Follow rollout_rules for the class and risk.
+- For required flags, define FLAG_KEY and FLAG_DEFAULT = False next to the key; evaluate with default=FLAG_DEFAULT.
 - When flags are enabled and required, emit exactly one flag_key matching key_pattern,
   reuse any issue-supplied key, and set flag_default=false. Exempt classes need no flag.
 - For required guarded rollout emit guarded_rollout_metric from allowed_metric_keys or
@@ -84,6 +85,7 @@ Rules:
   edits in this proposal. Supplied context and read tools are conveniences, not prerequisites.
   After an anchor failure, inspect fresh source and choose a unique verbatim anchor.
   Return task_complete=true with edits=[] if the task is already satisfied at this checkpoint.
+- For required flags, define FLAG_KEY and FLAG_DEFAULT = False next to the key; evaluate with default=FLAG_DEFAULT.
 - Follow flag_context for the selected key and whether this job requires a flag.
 - When flag_policy.enabled is false, do not introduce feature flags or guarded rollout.
   Preserve existing application flags; continue implementing functional acceptance tests.

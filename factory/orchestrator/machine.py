@@ -14,7 +14,8 @@ from factory.context.repo import analyze_repo
 from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, InfrastructureError, SafetyError
 from factory.execution.portable import PortableWorkspace
 from factory.execution.worktree import WorktreeManager
-from factory.governance.policy import Policy, review_plan, review_ship
+from factory.governance.flags import is_production_path
+from factory.governance.policy import Policy, review_plan, review_ship, selected_flag_key
 from factory.harness.base import AgentHarness
 from factory.launchdarkly.flags import LaunchDarklyService
 from factory.models import JobEvent, JobState, Stage
@@ -23,7 +24,7 @@ from factory.observability.trace import JsonLog, Tracer
 from factory.orchestrator.graph import COMPONENTS, assert_legal
 from factory.orchestrator.store import JobStore
 from factory.publish.pr import Publisher
-from factory.task_queue import current_task, missing_file_feedback, reopen_task, verification_feedback
+from factory.task_queue import current_task, missing_file_feedback, reopen_task, tasks, verification_feedback
 from factory.tools.layer import ToolLayer
 from factory.verification.commands import pytest_targets
 from factory.verification.gate import VerificationGate
@@ -408,6 +409,23 @@ class Factory:
         if missing:
             feedback = missing_file_feedback(job, missing[0])
             owner = reopen_task(job, missing[0], tools)
+        elif result.classification == "flag":
+            # Flag evidence belongs to production scope, regardless of which test
+            # ran last or which modules that test imports. Use stable plan ownership.
+            queue = tasks(job)
+            key = selected_flag_key(job)
+            candidates = list(dict.fromkeys(path for task in queue
+                for path in job.task_original_files[task.id] if is_production_path(path)))
+            containing_key = [path for path in candidates
+                              if key and tools._resolve(path).is_file() and key in tools.read(path)]
+            flag_modules = [path for path in candidates if Path(path).stem in {"flag", "flags"}]
+            paths = [path for path in flag_modules if path in containing_key] or containing_key or flag_modules
+            if not paths:
+                return Transition(stage=Stage.AWAIT_HUMAN,
+                                  detail="Flag audit has no production-file owner: " + result.actionable,
+                                  resume_stage=Stage.PLAN)
+            owner = reopen_task(job, paths[0])
+            feedback = verification_feedback(owner, result.actionable, tools)
         else:
             output = "\n".join(report.output for report in result.commands if not report.passed)
             owner = reopen_task(job, output or result.actionable, tools)

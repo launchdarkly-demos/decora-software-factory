@@ -145,11 +145,11 @@ Live acceptance (§11) is outside this mock-only session and has not been claime
 | §5 NO_COLOR, pytest color=no, concise Ruff, ANSI stripped from reports and feedback (E10/E13/E15) | Tool execution/report boundary; color and feedback tests | Required by #23 |
 | §10/§11 r2 reaches DONE with persisted draft PR | `test_issue23_replays.py:test_replay_r2` | Required by #23 |
 
-## #24 / r3 rules (spec-first)
+## #24 / r3 rules
 
 | Spec rule | Implementation and regression work | Status |
 | --- | --- | --- |
-| §8 Both default-off forms; any true fails; diagnostics name forms and lines | `governance/flags.py`; `test_issue24_replays.py`; shared verifier/reviewer/policy callers | Required by #24 |
-| §8 Planner/Builder FLAG_KEY + FLAG_DEFAULT=False and default=FLAG_DEFAULT | `agents/prompts.py`; prompt regression | Required by #24 |
-| §8 Flag audit routes to flag-module/key-file owner, never tests-only | `orchestrator/machine.py`; routing regressions | Required by #24 |
-| §10/§11 r3 reaches DONE with persisted draft PR | `test_issue24_replays.py:test_replay_r3` | Required by #24 |
+| §8 Both default-off forms; any true fails; diagnostics name forms and lines | [flags.py:audit_flag](../factory/governance/flags.py); [audit regressions and original receipt diff](../tests/test_issue24_replays.py); shared verifier/reviewer/policy callers | Covered |
+| §8 Planner/Builder FLAG_KEY + FLAG_DEFAULT=False and default=FLAG_DEFAULT | [prompts.py](../factory/agents/prompts.py); `test_prompt_convention` | Covered |
+| §8 Flag audit routes to flag-module/key-file owner, never tests-only | [machine.py:_verify](../factory/orchestrator/machine.py); `test_flag_failure_routes_to_owner` (flag module and alternate key-file owner), repair variant of `test_replay_r3` | Covered |
+| §10/§11 r3 reaches DONE with persisted draft PR | [test_issue24_replays.py:test_replay_r3](../tests/test_issue24_replays.py) (default-off and true-default repair variants; real Git/pytest/audit/review/policy/local publication) | Covered |

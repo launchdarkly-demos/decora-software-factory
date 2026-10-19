@@ -183,6 +183,16 @@ def flag_keys(job: JobState, plan: ImplementationPlan | None = None) -> set[str]
             if key and key != "replace-with-your-flag-key"}
 
 
+def issue_supplied_flag_key(job: JobState) -> str | None:
+    """Return a key only when the issue itself named it (must already exist in LD)."""
+    value = job.feature.flag_key
+    if not value:
+        return None
+    keys = {key for key in re.split(r"[\s,;]+", value.strip())
+            if key and key != "replace-with-your-flag-key"}
+    return next(iter(keys)) if len(keys) == 1 else None
+
+
 def fixed_flag_key(policy: Policy, job: JobState) -> str | None:
     """Prefer an exact URL, canonical owner/repo#number, then a numeric issue key."""
     url = job.feature.issue_url or ''

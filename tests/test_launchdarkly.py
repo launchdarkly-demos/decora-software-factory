@@ -184,6 +184,70 @@ def test_creates_a_boolean_flag_without_variations(tmp_path: Path) -> None:
     assert created[2]["tags"] == ["software-factory", "job-abc12345"]
 
 
+def test_replay_r8_policy_fixed_key_creates_when_missing(tmp_path: Path) -> None:
+    """r8: policy-fixed keys are provisioned; issue-supplied 404 still errors; 200 reuse unchanged."""
+    from factory.governance.policy import issue_supplied_flag_key
+
+    fixed = "decora-room-home-migration"
+    memory = MemoryLaunchDarkly(None)
+    job = _job()
+    job.feature.flag_key = None
+    job.fixed_flag_key = fixed
+    job.plan.flag_key = fixed
+    assert issue_supplied_flag_key(job) is None
+
+    record = _service(tmp_path, memory).ensure(job)
+    assert record.created
+    assert record.key == fixed
+    assert record.production_off()
+    assert record.environments_off is True
+    assert [call[0] for call in memory.calls[:2]] == ["GET", "POST"]
+    created = next(call for call in memory.calls if call[0] == "POST")
+    assert created[2]["key"] == fixed
+    assert created[2]["kind"] == "boolean"
+    assert created[2]["temporary"] is True
+
+    # Issue-supplied key + 404 still raises (must already exist).
+    issue_memory = MemoryLaunchDarkly(None)
+    issue_job = _job()
+    assert issue_supplied_flag_key(issue_job) == "decor-room-mood"
+    with pytest.raises(FactoryError, match="not found"):
+        _service(tmp_path, issue_memory).ensure(issue_job)
+    assert [call[0] for call in issue_memory.calls] == ["GET"]
+    assert not any(call[0] == "POST" for call in issue_memory.calls)
+
+    # Existing flag (GET 200) reuse path unchanged for a fixed key.
+    reuse_memory = MemoryLaunchDarkly(boolean_flag(on=False))
+    reuse_job = _job()
+    reuse_job.feature.flag_key = None
+    reuse_job.fixed_flag_key = fixed
+    reuse_job.plan.flag_key = fixed
+    reused = _service(tmp_path, reuse_memory).ensure(reuse_job)
+    assert reused.reused
+    assert reused.created is False
+    assert reused.production_off()
+    assert "POST" not in [call[0] for call in reuse_memory.calls]
+
+
+def test_replay_r8_fixed_key_ensure_flag_proceeds(tmp_path: Path) -> None:
+    """r8: after verification, ensure_flag creates a missing policy-fixed key and advances."""
+    rules = policy()
+    memory = MemoryLaunchDarkly(None)
+    service = _service(tmp_path, memory)
+    factory = make_factory(tmp_path, tmp_path, policy=rules, flag_service=service)
+    job = _job()
+    job.feature.flag_key = None
+    job.fixed_flag_key = "decora-room-home-migration"
+    job.plan.flag_key = job.fixed_flag_key
+    job.stage = Stage.ENSURE_FLAG
+    factory.advance(job)
+    assert job.stage == Stage.REVIEW
+    assert job.launchdarkly is not None
+    assert job.launchdarkly.created
+    assert job.launchdarkly.production_off()
+    assert any(call[0] == "POST" for call in memory.calls)
+
+
 def test_conflict_on_create_reuses_the_flag(tmp_path: Path) -> None:
     memory = MemoryLaunchDarkly(
         boolean_flag(

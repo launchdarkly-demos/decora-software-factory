@@ -23,7 +23,7 @@ def repository_tools(root: Path, policy: Policy, *, observed: dict[str, list[str
             return 'Repository inspection budget exhausted. Return a plan or ask for clarification.'
         try:
             value = operation()
-            result = value if isinstance(value, str) else json.dumps(value)
+            result = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         except (FactoryError, OSError):
             return 'File unavailable or denied by repository policy.'
         result = result[:min(16000, remaining)]

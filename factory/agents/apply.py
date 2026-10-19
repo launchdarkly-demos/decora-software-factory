@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -9,11 +10,25 @@ from factory.models import BuildProposal, BuildResult, JobState
 from factory.task_queue import current_task
 from factory.tools.anchors import anchor_span
 from factory.tools.layer import ToolLayer, _anchor_error
-from factory.tools.safety import check_content
+from factory.tools.safety import check_content, redact_secrets
 from factory.verification.commands import pytest_targets
 
 
 def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> BuildResult:
+    try:
+        return _apply_proposal(job, tools, proposal)
+    except (FactoryError, OSError, ValueError):
+        if tools.receipt_dir is not None:
+            tools.receipt_dir.mkdir(parents=True, exist_ok=True)
+            record = {"job_id": job.id, "task_id": job.current_task_id, "builder_call": job.builder_calls,
+                      "edits": [{"path": redact_secrets(edit.path), "kind": edit.kind,
+                                 "anchor": redact_secrets(edit.old)} for edit in proposal.edits]}
+            with (tools.receipt_dir / "rejected_edits.jsonl").open("a") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        raise
+
+
+def _apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> BuildResult:
     if job.worktree is None:
         raise RuntimeError("build requires a worktree")
     if job.plan is None:

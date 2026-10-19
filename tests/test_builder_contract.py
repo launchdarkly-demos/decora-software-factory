@@ -120,7 +120,8 @@ def test_anchor_feedback_distinguishes_missing_from_ambiguous(checkpoint):
     with pytest.raises(FactoryError) as caught:
         apply_proposal(job, tools, proposal([FileEdit(path='source.txt', kind='replace', old=anchor, new='x')]))
     feedback = str(caught.value)
-    assert repr(anchor[:200]) in feedback and anchor not in feedback
+    assert repr(anchor[:200]) in feedback
+    assert f'First divergent anchor line 1:\n{anchor}' in feedback
     assert len(feedback.split('Closest matching lines:\n')[1].splitlines()[:-1]) == 3
     assert feedback.endswith('Anchors must occur exactly once in the current file.')
 

@@ -17,7 +17,9 @@ from factory.tools.safety import check_content
 class ToolLayer:
     """Allowlisted commands and path-checked edits. Cwd is always the worktree."""
 
-    def __init__(self, worktree: Path, policy: Policy, *, target_repo: Path | None = None) -> None:
+    def __init__(self, worktree: Path, policy: Policy, *, target_repo: Path | None = None,
+                 receipt_dir: Path | None = None) -> None:
+        self.receipt_dir = receipt_dir
         self.worktree = worktree.resolve()
         self.policy = policy
         self.target_repo = target_repo.resolve() if target_repo else None
@@ -162,5 +164,24 @@ def _anchor_error(rel: str, text: str, old: str, count: int) -> str:
     ranked = sorted(enumerate(text.split("\n"), 1), key=lambda pair: (
         -max(difflib.SequenceMatcher(None, line, pair[1]).ratio() for line in anchor_lines), pair[0]))[:3]
     nearest = "\n".join(f"{number}: {line.encode('unicode_escape').decode('ascii')}" for number, line in ranked)
+    # Prefix occurrence is monotonic, so binary search avoids quadratic scans
+    # for long rejected anchors. A tie uses the first occurrence deterministically.
+    low, high = 0, len(old)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if old[:middle] in text:
+            low = middle
+        else:
+            high = middle - 1
+    prefix = old[:low]
+    start = text.find(prefix) if prefix else 0
+    divergent_line = old.count("\n", 0, low) + 1
+    file_line = text.count("\n", 0, start + low) + 1
+    file_lines = text.split("\n")
+    context = "\n".join(f"{index + 1}: {file_lines[index]}"
+                        for index in range(max(0, file_line - 6), min(len(file_lines), file_line + 5)))
+    divergence = (f"Longest occurring anchor prefix ({low} characters):\n{prefix}\n"
+                  f"First divergent anchor line {divergent_line}:\n{anchor_lines[divergent_line - 1]}\n"
+                  f"Verbatim file lines around divergence (line {file_line}, ±5):\n{context}\n")
     return (f"{rel}: anchor matched 0 times. Anchor (first 200 characters): {old[:200]!r}\n"
-            f"Closest matching lines:\n{nearest}\nAnchors must occur exactly once in the current file.")
+            f"{divergence}Closest matching lines:\n{nearest}\nAnchors must occur exactly once in the current file.")

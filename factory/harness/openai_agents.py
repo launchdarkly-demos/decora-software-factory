@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from factory.agents.apply import apply_proposal, check_proposal_safety
+from factory.agents.apply import apply_proposal
 from factory.agents.prompts import BUILDER_INSTRUCTIONS, PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
 from factory.context.repo import RepositoryReader
 from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, InfrastructureError
@@ -52,7 +52,7 @@ class OpenAIAgentsHarness:
                 "guarded_rollout": self.policy.guarded_rollout.model_dump(),
                 "plan_validation_feedback": job.govern_feedback,
                 "previous_plan": job.plan.model_dump() if job.plan else None,
-            }
+            }, ensure_ascii=False
         )
         agent = Agent(
             name="Planner",
@@ -91,7 +91,7 @@ class OpenAIAgentsHarness:
                 "flag_policy": self.policy.flags.model_dump(),
                 "flag_context": {"key": selected_flag_key(job), "default": False,
                                  "required": flag_required(self.policy, job)},
-            }
+            }, ensure_ascii=False
         )
         from agents import ModelSettings
 
@@ -119,7 +119,6 @@ class OpenAIAgentsHarness:
             proposal = output if isinstance(output, BuildProposal) else BuildProposal.model_validate(output)
         except ValueError as exc:
             raise FactoryError(_validation_feedback(exc)) from None
-        check_proposal_safety(tools, proposal)
         return apply_proposal(job, tools, proposal)
 
     def review(self, job: JobState, tools: ToolLayer):
@@ -138,7 +137,7 @@ class OpenAIAgentsHarness:
             "flag_policy": self.policy.flags.model_dump(),
             "rollout_rules": {key: rule.model_dump() for key, rule in self.policy.rollout_rules.items()},
             "guarded_rollout": self.policy.guarded_rollout.model_dump(),
-        })
+        }, ensure_ascii=False)
         agent = Agent(
             name="Reviewer",
             instructions=REVIEWER_INSTRUCTIONS,

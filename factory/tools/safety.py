@@ -16,8 +16,22 @@ _SECRET = re.compile(
 
 
 def check_content(content: str) -> None:
-    credentials = [value for key, value in os.environ.items()
-                   if any(marker in key.upper() for marker in ('TOKEN', 'SECRET', 'API_KEY', 'PASSWORD', 'SDK_KEY'))
-                   and len(value) >= 8]
+    credentials = _credentials()
     if _SECRET.search(content) or any(value in content for value in credentials):
         raise SafetyError('Secret detected in Builder content; edit refused')
+
+
+def _credentials() -> list[str]:
+    return [value for key, value in os.environ.items()
+            if any(marker in key.upper() for marker in ('TOKEN', 'SECRET', 'API_KEY', 'PASSWORD', 'SDK_KEY'))
+            and len(value) >= 8]
+
+
+def redact_secrets(content: str) -> str:
+    for value in sorted(_credentials(), key=len, reverse=True):
+        content = content.replace(value, '[redacted]')
+    # The detector needs only the header to reject a private key; receipts must
+    # remove its body as well, including an incomplete pasted block.
+    content = re.sub(r'-----BEGIN ((?:RSA |EC |OPENSSH )?PRIVATE KEY)-----.*?(?:-----END \1-----|$)',
+                     '[redacted]', content, flags=re.DOTALL)
+    return _SECRET.sub('[redacted]', content)

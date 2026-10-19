@@ -524,7 +524,8 @@ class Factory:
     def _tools(self, job: JobState) -> ToolLayer:
         if job.worktree is None:
             raise FactoryError("no worktree")
-        return ToolLayer(Path(job.worktree.path), self.policy, target_repo=self.target_repo)
+        return ToolLayer(Path(job.worktree.path), self.policy, target_repo=self.target_repo,
+                         receipt_dir=self._run_dir(job))
 
     def _run_dir(self, job: JobState) -> Path:
         path = self.home / "runs" / job.id

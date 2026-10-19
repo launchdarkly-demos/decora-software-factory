@@ -76,3 +76,13 @@ Run these with `.venv/bin/python -m pytest -q tests/test_issue22_replays.py`.
   isolation, and color suppression/stripping.
 
 Run these with `.venv/bin/python -m pytest -q tests/test_issue23_replays.py`.
+
+- `replay_r4` (#25, `tests/test_issue25_replays.py`) captures the verbatim opening
+  heading from the reconstructed r4 `app/store.py` (`/tmp/fac/r4`), confirmed
+  against `job-gh-5873513712-r4/{summary.json,log.jsonl,diff.patch}`. A proposal
+  containing `Room\x192Home` replaces the `Room→Home` span via the unique
+  escape-artifact fallback, records that span, and reaches DONE with real Git,
+  pytest, verification, deterministic review and persisted local draft publication.
+  The fixture isolates the observed anchor failure from target-app dependencies.
+  Unit regressions cover payload characters, ambiguous/atomic edits, divergence
+  context and complete redacted rejected-anchor receipts.

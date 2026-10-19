@@ -1,6 +1,7 @@
 """Unique anchor matching with conservative Unicode fallback and source spans."""
 from __future__ import annotations
 
+import re
 import unicodedata
 
 from factory.errors import FactoryError
@@ -63,5 +64,32 @@ def anchor_span(path: str, text: str, old: str) -> tuple[int, int, bool]:
             lines = ', '.join(str(text.count('\n', 0, start) + 1) for start, _ in matches)
             raise FactoryError(f'{path}: normalized anchor matched {len(matches)} times; line numbers: {lines}. '
                                'Extend the anchor until it\'s unique.')
+        matches = _escape_artifact_matches(text, old)
+        if len(matches) == 1:
+            return *matches[0], True
+        if matches:
+            lines = ', '.join(str(text.count('\n', 0, start) + 1) for start, _ in matches)
+            raise FactoryError(f'{path}: escape-artifact anchor matched {len(matches)} times; '
+                               f'line numbers: {lines}. Extend the anchor until it\'s unique.')
         raise FactoryError(_anchor_error(path, text, old, 0))
     return *matches[0], True
+
+
+# A damaged JSON escape may leave a C0 character followed by its remaining hex
+# digits: U+2192 became \x19 + "2" in r4. Runs stand for ONE source character.
+_ESCAPE_ARTIFACT = re.compile(r'(?:[\x00-\x08\x0b-\x1f]+[0-9a-fA-F]*|\\u[0-9a-fA-F]{4})+')
+
+
+def _escape_artifact_matches(text: str, old: str) -> list[tuple[int, int]]:
+    artifacts = list(_ESCAPE_ARTIFACT.finditer(old))
+    if not artifacts:
+        return []
+    parts: list[str] = []
+    offset = 0
+    for artifact in artifacts:
+        parts.extend((re.escape(old[offset:artifact.start()]), r'[^\x00-\x7f]'))
+        offset = artifact.end()
+    parts.append(re.escape(old[offset:]))
+    # Lookahead retains overlapping candidates so uniqueness cannot be accidental.
+    pattern = re.compile('(?=(' + ''.join(parts) + '))')
+    return [match.span(1) for match in pattern.finditer(text)]

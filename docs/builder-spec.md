@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: draft for review. It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s four #22 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -18,7 +18,7 @@ Status: draft for review. It's based on `codex/builder-task-loop` at 989c214 (PR
 | Plan | Planner | Task list, files per task, test targets, flag key, risk, migration plan | Edit files |
 | Govern plan | Governance | Risk and flag rules, the human review gate | Rewrite the plan without a repair round |
 | **Build** | **Builder** | **Turning each task into file edits, one task at a time, until every task is checkpointed** | Run commands, touch protected paths, change the plan's intent |
-| Verify | Verification gate | The one full test run, sending failures back to the owning task | Edit files |
+| Verify | Verification gate | Full test runs with a separate retry budget, sending failures back to the owning task | Edit files |
 | Flag gate | LaunchDarkly client | Making sure the flag exists in the policy project and is off in production | Turn the flag on |
 | Review and govern ship | Reviewer and governance | Findings and the final policy check | Merge |
 | Draft PR | Publisher | Branch, push and the PR body | Mark the PR ready or merge it |
@@ -68,7 +68,7 @@ Read actions are tools the Builder calls during its turn. Write actions are entr
 | `delete` | `path` | File exists; the path passes safety checks |
 | `move` | `path`, `new_path` | Source exists, destination doesn't; both paths pass safety checks. The destination is added to the plan automatically |
 
-**When an anchor is valid, exactly.** It's checked **once, at apply time**, against the file as staged so far (the checkpoint file plus any earlier edits in the same proposal). It's valid if and only if it's non-empty and occurs exactly once, compared byte for byte, newlines included. Nothing else counts: whether the Builder "read" or was "shown" that text doesn't matter. This rule replaces the "anchor was observed" pre-check (#20).
+**When an anchor is valid, exactly.** Check at apply time against staged text. A non-empty anchor with exactly one exact match is valid. More than one exact match is E6. If there are zero exact matches, retry once with Unicode NFC normalization and folding of control/confusable characters on both sides. The folding must cover the observed arrow `→` versus mangled control `\x12`, canonical composed/decomposed characters, typographic quotes/dashes and invisible formatting characters. Accept only exactly one normalized match, map it back to the exact original span, and preserve surrounding original text (including the original anchor for insert actions). Zero normalized matches is E5; multiple matches is E6. Never guess between candidates. Record fallback use, path and original span in the checkpoint log. Whether the Builder read or was shown the anchor is irrelevant. E5 closest lines escape all non-ASCII/control characters so they are visible.
 
 Edits run in the order they're listed, against the staged text. Edits that conflict, such as two creates of the same path, or an edit after a delete or move of the same file, are a correction.
 
@@ -89,7 +89,7 @@ All checks run on the fully staged proposal **before any file is written**. If a
 ## 5. Errors
 
 Each error belongs to one of three classes:
-- **Correction**: the same task is retried with the feedback, using 1 of `per_task_retries`.
+- **Correction**: the same task is retried with the feedback, using 1 of `per_task_retries`, except E15 which uses the independent job-level `verify_retries`.
 - **Split**: the same task continues from its checkpoint, using 1 of `split_attempts`. A split doesn't cost a retry.
 - **Fatal**: the job ends.
 
@@ -99,7 +99,7 @@ Each error belongs to one of three classes:
 | E2 | Turn limit hit (`MaxTurnsExceeded`) | Split | "You ran out of turns (N). The current file text is included; return the next part of the task directly, using at most K reads." |
 | E3 | Proposal malformed or schema invalid | Correction | Validation errors (field and reason), plus "Return one complete BuildProposal." |
 | E4 | Empty proposal / no edits without `task_complete=true` | Correction | "No edits returned. Make concrete edits for task T, or set `task_complete=true` if the task is already done at this checkpoint." |
-| E5 | Anchor matches 0 times | Correction | File, the first 200 characters of the anchor, and the 3 closest matching lines with line numbers. "Anchors must occur exactly once in the current file." |
+| E5 | Anchor matches 0 times after the single fallback | Correction | File, the first 200 characters of the anchor, and the 3 closest matching lines with line numbers and non-ASCII/control characters escaped. "Anchors must occur exactly once in the current file." |
 | E6 | Anchor matches more than once | Correction | File, number of matches, and line numbers of each. "Extend the anchor until it's unique." |
 | E7 | Empty anchor on `replace`/`insert_*` | Correction | "`replace` and `insert_*` need a non-empty unique anchor. To add code without one, use `append` or `prepend`." |
 | E8 | Conflicting edits (create of an existing path, edit after delete, move onto an existing path) | Correction | Both edits and why they conflict |
@@ -107,9 +107,9 @@ Each error belongs to one of three classes:
 | E10 | Formatter failure | Correction | The formatter's message with ANSI codes stripped, plus the E9 context |
 | E11 | Invalid module or package name | Correction | Path and a suggested valid name |
 | E12 | Placeholder markers in content (`[excerpt…]`, `[omitted…]`) | Correction | "Content contains preview markers; read the exact source." |
-| E13 | Quick-test failure (task's own targets) | Correction | Failing test ids and the last 60 lines of output. If the task has no retries left, record the result as advisory and move on (see §8) |
+| E13 | Quick-test failure after `task_complete=true` | Correction | Failing test ids and the last 60 lines of output, routed to the module-under-test owner (§8). Exit 5 is a correction naming the target file. If the owning task has no retries left, record the result as advisory and move on |
 | E14 | Planned file still missing when all tasks report done | Correction to the task that owns the file | "Create `<file>` covering: `<task description and acceptance>`." |
-| E15 | Full verification failure | Correction to the task that owns the failing file (§8) | The failing test ids, the traceback section that points into the owning file, and the current text of that region |
+| E15 | Full verification failure | Correction to the module-under-test owner (§8), charged only to `verify_retries` | The failing test ids, relevant traceback, and current text of the routed modules; never consume `per_task_retries` |
 | E16 | Protected path, `..`, symlink escape, path outside the root | **Fatal** | "Safety violation: `<rule>` on `<path>`." |
 | E17 | Secret in content | **Fatal** | "Safety violation: credential-like content in `<path>`." The value is never echoed |
 | E18 | Model or network error (5xx, timeout, connection) | Infrastructure: retried up to 3 times with backoff, not charged to the task | n/a; logged |
@@ -117,7 +117,9 @@ Each error belongs to one of three classes:
 | E20 | Job attempt cap reached | **Fatal** | "Job reached max_job_attempts (N)." |
 | E21 | Splits exhausted for a task | After `split_attempts`, each further E1/E2 counts as a correction (E19 applies) | Same text as E1/E2 |
 
-Nothing apart from E16, E17, E19 and E20 may end a job.
+| E22 | Full-verification retry budget exhausted | **Fatal** | "E22: Job exhausted verify_retries (N); last verification failure: …" |
+
+Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies to ordinary Builder corrections; a full-verification failure itself cannot cause E19.
 
 ## 6. Budgets
 
@@ -125,6 +127,7 @@ Nothing apart from E16, E17, E19 and E20 may end a job.
 |---|---|---|---|
 | Output tokens per Builder call | `builder_max_output_tokens` | 6000 | **16000** (gpt-4.1 allows 32k of output; fewer splits) |
 | Turns per Builder call | `builder_max_turns` | 40 | 40 |
+| Full-verification retries per job | `verify_retries` | 3 | 3 |
 | Retries per task | `per_task_retries` | 3 | 3 |
 | Splits per task | `split_attempts` | 3 | 4 |
 | Builder calls per job | `max_job_attempts` | 25 | 30 |
@@ -146,30 +149,29 @@ Nothing apart from E16, E17, E19 and E20 may end a job.
 - After a proposal applies, the factory commits only that proposal's paths (`checkpoint <task>[/<part>]`). It records the commit hash under the task, the `task_complete` flag and the summary.
 - A task is **done** only when `task_complete=true` and the checkpoint is committed.
 - **Splits** add checkpoints under the same task.
-- **JobState** keeps: `current_task_id`, `completed_task_ids`, `checkpoint_shas`, `task_retries`, `task_split_attempts`, `builder_calls`, `auto_added_files`, `deleted_files` and `task_summaries`.
+- **JobState** keeps: `current_task_id`, `completed_task_ids`, `checkpoint_shas`, `task_retries`, `verify_retries_used`, `verification_task_routes`, `task_split_attempts`, `builder_calls`, `auto_added_files`, `deleted_files` and `task_summaries`.
 - **Resume after a crash, worker restart or Temporal replay:** reset the worktree to the latest checkpoint commit, rebuild the file context from disk, and continue from `current_task_id`. Uncommitted edits are thrown away.
 - A correction or split always starts from the latest checkpoint, never from a half-applied proposal, because apply is all-or-nothing.
 
 ## 8. Verification, routing failures back, the flag gate and the PR
 
 **Quick tests.**
-- They run after a task's checkpoint, for that task's `test_targets` only.
-- A failure is a correction to the same task (E13).
-- If that task's retries are used up, the result is recorded as advisory and the job moves on, because the full verification is the real gate.
+- Run only after a checkpoint reporting `task_complete=true`, on that task's `quick_test_targets`. Never run on partial parts, including proposal commands that are quick tests.
+- Route failures to the module-under-test owner below (E13), using that owner's `per_task_retries`. Exit 5 (no tests collected) is a correction naming the target file.
+- If the owning task's retries are spent, record the failure as advisory and continue to full verification.
 
 **Full verification.**
-- It runs **once**, after every task is done.
-- First, every planned file must exist (E14).
-- Then `pytest` runs on the plan's targets, using the generated `pytest-gate.ini`, which adds the worktree root to `pythonpath`. Tests in subfolders must be able to import root packages.
-- Configured linters run after that.
-- Exit code 4 (path not found) names the missing path.
+- Run after every task is done; repeat after routed fixes until it passes or the independent job-level `verify_retries` budget is exhausted (default 3 retries after the initial run).
+- Every planned file must exist (E14).
+- Run `pytest` on plan targets using `pytest-gate.ini` with the worktree root on `pythonpath`; then configured linters. Exit 4 names the missing path.
+- Each failed full verification reopens the owning task with E15 and consumes one job-level verification retry, without changing that task's `per_task_retries`. Persist the used count and routing history by task. After all allowed retries fail, E22 ends the job. Ordinary Builder corrections and the job call cap retain their own budgets.
 
-**Sending a failure back.**
-1. Collect the repo paths in the failing traceback and the files of any failing test.
-2. The owning task is the **last** task (in plan order) whose files include one of those paths.
-3. If none match, it's the last task in the plan.
-4. That task is marked not done again. It gets an E15 correction and uses its own retry budget. The tasks that depend on it are re-checked only if their files changed afterwards.
-5. Full verification runs again once the queue is back to all done.
+**Sending a failure back (quick or full verification).**
+1. Collect failing test files and repo traceback frames. Prefer the deepest non-test repo frame (closest to the failure). Also resolve repo modules imported by the failing test file, including relative imports and imports of symbols/submodules. Ignore external modules and unrelated command lines.
+2. Select the **last** task in plan order owning a candidate module under test (deepest frame takes precedence over imports). If no module owner is found, fall back to the previous rule: last task owning a mentioned traceback/test path, else last task in the plan.
+3. Add the identified repo modules to the fixing task's scope and supply their current text in its next context. Preserve original ownership when adding repair scope so later routing stays stable.
+4. Mark the owner not done. For a quick-test failure from another task, preserve the reporting task's completed checkpoint; the module owner does the repair. Re-check dependent tasks only when they touched the owner's files later.
+5. Run full verification once the queue is all done again. Quick-test corrections use the owning task's retries; full-verification corrections use only the job verification budget.
 
 **Flag gate.**
 - It runs only after verification passes.
@@ -234,6 +236,7 @@ Nothing apart from E16, E17, E19 and E20 may end a job.
 | #20 (a) | Valid anchors in an 18.8 KB file rejected as "not read" | §3 anchor validated once, at apply |
 | #20 (b) | Syntax errors found late, without context | §4.4 parse before writing (E9) |
 | #18 | Watcher comment's command reached the wrong server | §9 commands include the real address |
+| #22 / `job-gh-5873513712-r1` | Tests-only task exhausted quick retries for migration defects; full verify hit E19; arrow anchor mangled to control; partial quick test exit 5 | §3 normalized unique fallback and escaped E5; §5 E13/E15/E22; §6 independent verify budget; §8 module routing and completion-only quick tests |
 | Ops | Live runs blocked by manual job IDs, port and address mix-ups, project key changes | §9 rerun via label; §11 live definition of done |
 
 ## 11. Acceptance criteria
@@ -252,6 +255,12 @@ Nothing apart from E16, E17, E19 and E20 may end a job.
 10. **Resume**: kill the worker between two checkpoints, and the job resumes from the last checkpoint with an identical end result.
 11. **Watcher**: a comment generated with a non-default address includes `--address`, and a `factory:retry` label starts `-r1`.
 
+12. **#22 routing**: tests-only task fails on an earlier task's imported module; route back to that owner with fresh module scope/context.
+13. **#22 budgets**: quick retries exhausted, then full verification still reopens the owner without charging task retries; a successful fix reaches DONE. Also prove E22 at exhaustion.
+14. **#22 anchors**: mangled control/Unicode anchor uses a unique normalized original span, logs fallback, and reaches DONE; ambiguous fallback rejects atomically and E5 escapes closest lines.
+15. **#22 timing**: a partial part with no collected tests runs no quick tests; completion with exit 5 produces a correction naming the file, then reaches DONE.
+16. **`replay_r1`**: reproduce `job-gh-5873513712-r1` end to end with its six-task plan, tests-only task 6 exposing task 5 migration defects, arrow/control anchor and partial no-tests part; reach DONE with a persisted draft PR record.
+
 **Live definition of done** (decor-agent, real model, `--ld live --push`):
 - A maintainer labels an issue with a high-risk migration plan (the #8/#12 room-home migration). The watcher starts the job without anyone typing a job ID.
 - After the human approves the plan, the job reaches a **draft PR on arober39/decor-agent** with no further human steps, and:
@@ -261,7 +270,7 @@ Nothing apart from E16, E17, E19 and E20 may end a job.
   - total Builder calls ≤ `max_job_attempts`, and cost within the §6 estimate.
 - This must happen on **two consecutive live runs**, with the second on a different issue, so one lucky run doesn't count as done.
 
-## 12. Gaps between this spec and 989c214
+## 12. Change list status (baseline 989c214)
 
 1. **Anchor pre-check:** remove the "anchor was not read in this attempt" check in `harness/openai_agents.py` and rely on the apply-time check (§3). Add the closest-lines detail to E5 and E6.
 2. **Parse first:** run `ast.parse` (and parse planned JSON, YAML and TOML) on every staged file before writing in `agents/apply.py`, giving E9 with context. Strip ANSI codes from formatter output (E10).
@@ -276,6 +285,8 @@ Nothing apart from E16, E17, E19 and E20 may end a job.
 11. **Watcher logs:** sync errors log the job id and the error message, not just the type name.
 12. **Replays:** add replays 6, 7, 8, 10 and 11 from §11; replays 1 to 5 and 9 exist already.
 13. **Docs:** replace `docs/general-planning.md`'s Builder section with a pointer to this spec.
+
+14. **#22 approved, implementation pending:** module-under-test routing and repair scope/context; independent `verify_retries: 3` with E22; unique normalized anchor fallback with checkpoint logging and escaped E5; completion-only quick tests and named exit-5 corrections. Replays 12–16 are required before marking implemented.
 
 ## 13. Recommendation: large-file handling
 

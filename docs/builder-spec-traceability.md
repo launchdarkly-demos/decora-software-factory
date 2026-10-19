@@ -1,10 +1,10 @@
 # Builder spec traceability
 
-Audit of the approved [builder-spec.md](builder-spec.md), §§2–9 and every E1–E21.
+Audit of the approved [builder-spec.md](builder-spec.md), §§2–9 and every E1–E22.
 Code/test links name the implementing symbol and the covering test. “Covered” means
 an automated regression exercises the rule, not proof of all possible inputs.
 GAP marks incomplete implementation or missing direct coverage even when nearby
-tests pass. The approved spec was not modified.
+tests pass. The #22 approval is recorded in the spec before implementation.
 
 Closed audit gaps: required per-kind edit fields and strict boolean coverage; task/part
 checkpoint subjects and proposal-only commits even with unrelated staged paths; deleted
@@ -124,3 +124,13 @@ Live acceptance (§11) is outside this mock-only session and has not been claime
 - **G6 — Cost ceiling:** max_job_attempts is enforced, but the stated dollar ceiling is an estimate, not a metered spending cap. Read-tool input tokens, provider pricing changes and repeated infrastructure recovery are not bounded by an actual dollar budget; historical measurements were not rerun here.
 - **G8 — Credential detector limits:** environment credentials shorter than eight characters are excluded; literal SDK keys not present in the environment are not comprehensively recognized. Existing tests cover long environment values and provider-token patterns, not those boundary cases.
 - **G7 — Every flag environment:** the gate checks/turns off policy-configured environments and production, rather than discovering all project environments. No test covers an extra environment absent from policy. Offline mode also deliberately permits disclosed, unverified drafts, so the unconditional live flag rule only holds in live mode with all environments configured.
+
+## #22 approved changes (implementation pending)
+
+| Rule | Implementation / coverage | Status |
+|---|---|---|
+| §3 / E5 normalized unique fallback, original span, checkpoint log, escaped closest lines | agents/apply.py; tools/layer.py; #22 anchor replay | Pending |
+| §5 E13 / §8 module-under-test routing, stable ownership, repair scope/current context | task_queue.py; orchestrator/machine.py; #22 routing replay | Pending |
+| §5 E15/E22 / §6 separate job verify_retries=3, persisted usage and per-task routes | governance/policy.py; models.py; orchestrator/machine.py; #22 budget replay and exhaustion | Pending |
+| §8 completion-only quick tests, exit 5 names file | orchestrator/machine.py; agents/apply.py; #22 timing replay | Pending |
+| §10 #22/r1 / §11 replay_r1 six tasks to DONE and draft record | tests/test_replays.py | Pending |

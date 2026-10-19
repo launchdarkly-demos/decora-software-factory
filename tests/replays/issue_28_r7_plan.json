@@ -1,0 +1,280 @@
+{
+  "flag_task_id": "provision_flag_decora_room_home_migration_2",
+  "normalization_notes": [
+    "Updated the task dependencies in all test and doc generation steps, removing any references to provisioning the flag except from the final flag-gating task. All task file lists have been double-checked for accuracy against the repo inventory. The order ensures complete construction of migration logic, documentation, and tests before the flag is provisioned. No expansion of product scope.",
+    "Inserted provision_flag_decora_room_home_migration_2: app/flags.py; gate app/project.py, app/store.py, mcp_servers/decor_design.py, migrations/migration_0001_room_home.py, app/__init__.py."
+  ],
+  "change_class": "data_migration",
+  "guarded_rollout_metric": "decora-request-error",
+  "summary": "Safely associate rooms with homes by home_id, gated behind a migration flag. Legacy rooms are migrated explicitly and idempotently into a default home; all per-room state and links are preserved. Acceptance criteria are validated by detailed migration and regression tests, recovery documentation, and careful flag-based control. This work is high-risk and requires thorough human and test verification, with no UI or API changes in this slice.",
+  "files": [
+    "app/project.py",
+    "app/store.py",
+    "app/flags.py",
+    "mcp_servers/decor_design.py",
+    "migrations/migration_0001_room_home.py",
+    "app/__init__.py",
+    "tests/migrations/test_migration_0001_room_home.py",
+    "docs/room_home_migration.md"
+  ],
+  "steps": [
+    "Document current room and home mapping, including all context-key logic and compatibility, based on app/project.py and app/store.py.",
+    "Update models so every room gets a home association by home_id, with ownership based on IDs (not names). Duplicate room names are supported; context keys remain compatible with previous flows.",
+    "Implement a safe, idempotent migration script in migrations/migration_0001_room_home.py: create a default home, migrate all legacy rooms, preserve existing state/context/links, log each action, allow recovery from interruptions, assign only when the migration flag is set.",
+    "Define and enforce decora-room-home-migration in app/flags.py, defaulting to off. Migration must only run when this flag is explicitly enabled. No implicit migration on import or startup.",
+    "Update MCP server (mcp_servers/decor_design.py) code as needed to guarantee that all project and room MCP routes/resources work identically for both pre- and post-migration data, using correct home/room isolation logic. Regression paths for context keys and project resources must remain compatible.",
+    "Write exhaustive migration and compatibility tests in tests/migrations/test_migration_0001_room_home.py. Include: legacy to migrated state, round trip, repeat runs, simulated interruptions, link and resource preservation, flag-off and flag-on regression. (Partition into multiple tasks to keep at most six test functions per task.)",
+    "Document the full migration, rollback, and data recovery plan in docs/room_home_migration.md, including all constraints, flag control, step breakdowns, recovery instructions, idempotency, edge-case analysis, and necessary manual steps for human review. Reference observed code/behavior.",
+    "Provision and gate all new migration/home logic and tests with the required decora-room-home-migration flag, referencing the mandatory key (must match policy) and enforcing at every code and test entry point."
+  ],
+  "flag_key": "decora-room-home-migration",
+  "flag_default": false,
+  "test_targets": [
+    "tests/migrations/test_migration_0001_room_home.py"
+  ],
+  "risk": "high",
+  "ambiguous": false,
+  "questions": [],
+  "recipe": "general",
+  "context_files": [
+    "app/project.py",
+    "app/store.py",
+    "app/flags.py",
+    "mcp_servers/decor_design.py"
+  ],
+  "tasks": [
+    {
+      "id": "inspect-room-and-home-representation",
+      "description": "Document current storage and identification of rooms and any existing home registry or context key hints from app/project.py and app/store.py.",
+      "files": [
+        "app/project.py",
+        "app/store.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 2,
+      "quick_test_targets": [],
+      "depends_on": [],
+      "acceptance": [
+        "Documentation of existing room and home storage, context key mapping, project structure, and discovery of hidden edge cases."
+      ]
+    },
+    {
+      "id": "update-models-to-support-home-association",
+      "description": "Add or revise fields so every room has a home_id. Support duplicate room names across and within homes; all identification and ownership logic must use IDs, not names.",
+      "files": [
+        "app/project.py",
+        "app/store.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 3,
+      "quick_test_targets": [],
+      "depends_on": [
+        "inspect-room-and-home-representation"
+      ],
+      "acceptance": [
+        "Each room holds a valid home_id; isolation remains correct. Duplicate names allowed. IDs govern ownership/lookup."
+      ]
+    },
+    {
+      "id": "implement-migration-script-for-legacy-rooms",
+      "description": "Implement migrations/migration_0001_room_home.py to: (a) create a default home, (b) move all legacy rooms, (c) preserve complete room/project state and links, (d) ensure idempotency and detailed logging for stepwise recovery.",
+      "files": [
+        "migrations/migration_0001_room_home.py",
+        "app/project.py",
+        "app/store.py",
+        "app/__init__.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 3,
+      "quick_test_targets": [],
+      "depends_on": [
+        "update-models-to-support-home-association"
+      ],
+      "acceptance": [
+        "After migration (flag ON), all legacy rooms move to the default home, full state preserved. Re-running is safe. Failures and interrupts are recoverable."
+      ]
+    },
+    {
+      "id": "add-migration-flag-and-checks",
+      "description": "Define decora-room-home-migration in app/flags.py (default false); ensure migration only runs if flag is explicitly set. Never allow implicit or auto-run migration anywhere.",
+      "files": [
+        "app/flags.py",
+        "migrations/migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 2,
+      "quick_test_targets": [],
+      "depends_on": [
+        "implement-migration-script-for-legacy-rooms"
+      ],
+      "acceptance": [
+        "Migration cannot run unless flag is enabled. No codepath allows implicit/automatic run."
+      ]
+    },
+    {
+      "id": "update-mcp-server-for-home-compatibility",
+      "description": "Ensure all MCP/server logic and routes remain fully compatible after model and migration changes, supporting both flagged and unflagged (legacy) states with correct context key and resource routing.",
+      "files": [
+        "mcp_servers/decor_design.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 2,
+      "quick_test_targets": [],
+      "depends_on": [
+        "add-migration-flag-and-checks"
+      ],
+      "acceptance": [
+        "Resources and tools are correct for both pre- and post-migration rooms. Home/room/resource isolation is always maintained."
+      ]
+    },
+    {
+      "id": "document-migration-recovery-and-guidelines",
+      "description": "Prepare/append docs/room_home_migration.md: rationale, migration details, step-by-step guidance, human approval requirements, error and recovery procedures, idempotency design, rollback documentation, and all observed limits/notes.",
+      "files": [
+        "docs/room_home_migration.md"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 1,
+      "quick_test_targets": [],
+      "depends_on": [
+        "write-migration-tests_part_3"
+      ],
+      "acceptance": [
+        "Documentation fully cites rationale and implementation; describes idempotency, failure/recovery, migration/rollback, and human review requirements, and references/test alignment is clear."
+      ]
+    },
+    {
+      "id": "provision_flag_decora_room_home_migration",
+      "description": "Provision required migration flag and gate all new/home association logic; ensure complete test and migration coverage, referencing the flag policy and enforcing the key in each relevant code/test entry.",
+      "files": [
+        "app/flags.py",
+        "app/project.py",
+        "app/store.py",
+        "mcp_servers/decor_design.py",
+        "migrations/migration_0001_room_home.py",
+        "app/__init__.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [],
+      "depends_on": [
+        "inspect-room-and-home-representation",
+        "update-models-to-support-home-association",
+        "implement-migration-script-for-legacy-rooms",
+        "add-migration-flag-and-checks",
+        "update-mcp-server-for-home-compatibility",
+        "write-migration-tests_part_1",
+        "write-migration-tests_part_2",
+        "write-migration-tests_part_3",
+        "document-migration-recovery-and-guidelines"
+      ],
+      "acceptance": [
+        "In app/flags.py define DECORA_ROOM_HOME_MIGRATION_FLAG = 'decora-room-home-migration' and FLAG_DEFAULT = False. All new logic gated with this flag and checked at migration/test entry points."
+      ]
+    },
+    {
+      "id": "provision_flag_decora_room_home_migration_2",
+      "description": "Provision required flag decora-room-home-migration and gate new behavior.",
+      "files": [
+        "app/flags.py",
+        "app/project.py",
+        "app/store.py",
+        "mcp_servers/decor_design.py",
+        "migrations/migration_0001_room_home.py",
+        "app/__init__.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [],
+      "depends_on": [
+        "inspect-room-and-home-representation",
+        "update-models-to-support-home-association",
+        "implement-migration-script-for-legacy-rooms",
+        "add-migration-flag-and-checks",
+        "update-mcp-server-for-home-compatibility",
+        "document-migration-recovery-and-guidelines",
+        "provision_flag_decora_room_home_migration"
+      ],
+      "acceptance": [
+        "In app/flags.py, define DECORA_ROOM_HOME_MIGRATION_FLAG = 'decora-room-home-migration' and FLAG_DEFAULT = False.",
+        "Gate new behavior with get_flag(DECORA_ROOM_HOME_MIGRATION_FLAG, context, default=FLAG_DEFAULT)."
+      ]
+    },
+    {
+      "id": "write-migration-tests_part_1",
+      "description": "Write at most six test functions covering legacy-to-migrated state, flag-off/flag-on, round trip, and state preservation for primary cases in tests/migrations/test_migration_0001_room_home.py.",
+      "files": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "update-mcp-server-for-home-compatibility",
+        "provision_flag_decora_room_home_migration_2"
+      ],
+      "acceptance": [
+        "Migration passes all legacy and regression tests with and without flag set."
+      ]
+    },
+    {
+      "id": "write-migration-tests_part_2",
+      "description": "Write at most six test functions for: simulated interruptions, repeat execution, partial-failure recovery, idempotency, and additional regressions in tests/migrations/test_migration_0001_room_home.py.",
+      "files": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "write-migration-tests_part_1",
+        "provision_flag_decora_room_home_migration_2"
+      ],
+      "acceptance": [
+        "Interruptions and repeated migration runs are always non-destructive; all recovery/continuation cases pass."
+      ]
+    },
+    {
+      "id": "write-migration-tests_part_3",
+      "description": "Write at most six test functions for MCP/room/project behavior regressions, covering all key cases and edge conditions as observed in pre- and post-migration states in tests/migrations/test_migration_0001_room_home.py.",
+      "files": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "rewrite_files": [],
+      "max_test_functions": 6,
+      "quick_test_targets": [
+        "tests/migrations/test_migration_0001_room_home.py"
+      ],
+      "depends_on": [
+        "write-migration-tests_part_2",
+        "provision_flag_decora_room_home_migration_2"
+      ],
+      "acceptance": [
+        "All per-room/MCP regression scenarios pass for both legacy and migrated states."
+      ]
+    }
+  ],
+  "verification_profiles": [
+    "migration"
+  ],
+  "large_change": true,
+  "important_ux_change": false,
+  "flag_rationale": "High-risk migration of core project and room data; flag required to permit safe, stepwise, manually approved rollout, as required by policy. No frontline or user-exposed changes occur until flagged and reviewed. Migration code is strictly isolated.",
+  "requires_migration": true,
+  "migration_plan": "- Migration runs only when the decora-room-home-migration flag is explicitly set (never on startup or import).\n- Script establishes a default home (idempotently/uniquely).\n- Each legacy room is assigned to the default home, with all associated per-room state and external/context key links preserved.\n- Logs every migration step for recoverability; no original data is destroyed until explicit human verification/approval.\n- Migration is idempotent and safe to repeat—previously migrated rooms skipped (never duplicated or mixed).\n- Partial failures: migration records stepwise status, can be resumed or recovered manually by reviewing logs/partial output.\n- Rollback: no automatic rollback; on error, require manual restore from backup or data review per the doc. All migration/rollback guidance is documented in docs/room_home_migration.md.\n- All pre- and post-migration codepaths for context keys/room/home lookup are preserved and tested for regression compatibility.\n- Thorough test suite in tests/migrations, run in isolation, with coverage for all acceptance, edge cases, repeated executions, interrupted states, and flag-off/on compatibility.\n- Human review and approval are mandatory before migration is executed in non-test environments.",
+  "risks": [
+    "Possible edge cases with legacy or malformed room/project data affecting migration or mixing state.",
+    "Context key or external/project link breakage if isolation is not comprehensive.",
+    "Backup/restore must be handled with great care; improper human intervention could corrupt mapping.",
+    "Migration code must never auto-execute; human and test review mandatory before launch."
+  ],
+  "assumptions": [
+    "Default home is uniquely/clearly named and discoverable.",
+    "All per-room/project state is stored in isolatable, discoverable structures. No untracked/sideband state.",
+    "All MCP and context key features are represented in observable test regressions and project briefs."
+  ]
+}

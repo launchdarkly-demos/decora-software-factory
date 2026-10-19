@@ -220,12 +220,12 @@ def test_normalization_reuses_owner_collapses_duplicate_contracts_and_module_sel
     assert plan.tasks[-1].files[0] == 'lib/flag.py'
     original = plan.tasks[-1]
     duplicate = original.model_copy(deep=True)
-    duplicate.id = 'duplicate'
+    duplicate.id = original.id + '_2'
     plan.tasks.append(duplicate)
     normalize_flag_task(rules, job, plan)
     assert plan.flag_task_id == original.id
-    assert not any('FLAG_DEFAULT' in check for check in duplicate.acceptance)
-    assert len(plan.normalization_notes) == 1
+    assert duplicate.id not in {task.id for task in plan.tasks}
+    assert any(f'Merged {duplicate.id}' in note for note in plan.normalization_notes)
 
 
 def test_credential_shaped_code_is_redacted(monkeypatch):

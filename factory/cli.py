@@ -7,8 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from factory.command_output import strip_ansi
 from factory.dotenv import ensure_env_key, read_dotenv_key
 from factory.errors import FactoryError
+from factory.gitcmd import git_env
 from factory.governance.policy import load_policy
 from factory.harness.base import AgentHarness
 from factory.harness.mock import MockHarness
@@ -177,6 +179,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             ["git", "-C", str(repo), "branch", "--list", f"factory/{job.id}"],
             check=False,
             capture_output=True,
+            env=git_env(),
             text=True,
         ).stdout.strip()
         if leftover:
@@ -241,6 +244,7 @@ def _porcelain(repo: Path) -> str:
         ["git", "-C", str(repo), "status", "--porcelain"],
         check=False,
         capture_output=True,
+        env=git_env(),
         text=True,
     )
-    return proc.stdout
+    return strip_ansi(proc.stdout)

@@ -10,6 +10,7 @@ from factory.governance.policy import flag_required
 from factory.models import CommandReport, FailureClass, JobState, VerifyResult
 from factory.task_queue import missing_file_feedback
 from factory.tools.layer import ToolLayer
+from factory.verification.formatting import FIXABLE_F, ruff_options
 from factory.verification.profiles import prerequisites, selected_profiles
 
 
@@ -111,6 +112,7 @@ class VerificationGate:
         ini.write_text(f"[pytest]\naddopts =\npythonpath = {shlex.quote(str(tools.worktree))}\n")
         argv = self._pytest_bin() + [
             "-q",
+            "--color=no",
             "-p",
             "no:cacheprovider",
             "-c",
@@ -124,19 +126,20 @@ class VerificationGate:
     def _lint_and_types(self, job: JobState, tools: ToolLayer) -> list[CommandReport]:
         assert job.worktree is not None
         changed = tools.changed_files(job.worktree.base_sha)
-        added_report = tools.run(
-            ["git", "diff", "--no-renames", "--name-only", "--diff-filter=A", job.worktree.base_sha, "HEAD"]
-        )
-        added = [line for line in added_report.output.splitlines() if line.endswith(".py")]
         py_changed = [path for path in changed if path.endswith(".py") and tools._resolve(path).is_file()]
         reports: list[CommandReport] = []
-        lint_targets = added
-        if lint_targets:
+        if py_changed:
             ruff = _bin("ruff")
             if ruff is None:
                 reports.append(_missing("ruff"))
             else:
-                reports.append(tools.run([*ruff, "check", "--isolated", "--select", "E,F", *lint_targets]))
+                groups: dict[tuple[str, ...], list[str]] = {}
+                for path in py_changed:
+                    groups.setdefault(tuple(ruff_options(tools.worktree, path)), []).append(path)
+                for options, files in groups.items():
+                    defaults = ['--select', 'E9,F', '--ignore', FIXABLE_F] if options == ('--isolated',) else []
+                    reports.append(tools.run([*ruff, "check", *options, *defaults,
+                                              '--output-format=concise', '--', *files]))
         if py_changed:
             python = _target_python(self.target_repo)
             reports.append(tools.run([python, "-m", "compileall", "-q",

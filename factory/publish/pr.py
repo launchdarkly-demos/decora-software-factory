@@ -5,7 +5,9 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from factory.command_output import strip_ansi
 from factory.errors import GovernanceError
+from factory.gitcmd import git_env
 from factory.governance.policy import Policy, guarded_rollout_required, selected_flag_key
 from factory.models import JobState, PullRequestDraft
 
@@ -63,12 +65,12 @@ class Publisher:
 
     def _run(self, job: JobState, argv: list[str]) -> str:
         assert job.worktree is not None
-        result = self.runner(argv, cwd=job.worktree.path, check=False, capture_output=True, text=True)
+        result = self.runner(argv, cwd=job.worktree.path, check=False, capture_output=True, text=True, env=git_env())
         if result.returncode:
             # A transport failure can occur after a successful side effect. Let
             # Temporal retry and reconcile; never include provider output/secrets.
             raise PublicationError(f"Publication command failed: {argv[0]}")
-        return result.stdout or ""
+        return strip_ansi(result.stdout or "")
 
     def _existing(self, job: JobState, repo: str) -> str | None:
         assert job.worktree is not None

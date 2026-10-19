@@ -6,7 +6,9 @@ import subprocess
 from pathlib import Path
 from typing import cast, get_args
 
+from factory.command_output import strip_ansi
 from factory.errors import FactoryError
+from factory.gitcmd import git_env
 from factory.models import ChangeClass, FeatureRequest
 
 
@@ -69,12 +71,13 @@ def load_github_issue(slug: str, number: int) -> FeatureRequest:
         ["gh", "issue", "view", str(number), "--repo", slug, "--json", "title,body,url,labels"],
         check=False,
         capture_output=True,
+        env=git_env(),
         text=True,
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "gh issue view failed").strip()
-        raise FactoryError(detail)
-    payload = json.loads(proc.stdout)
+        raise FactoryError(strip_ansi(detail))
+    payload = json.loads(strip_ansi(proc.stdout))
     return parse_issue_body(payload.get("title", ""), payload.get("body", ""), url=payload.get("url"),
                             labels=[item["name"] for item in payload.get("labels", [])])
 

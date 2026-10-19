@@ -19,6 +19,8 @@ no network calls, pushes, or remote PR creation occur.
   asserts fresh source on all three calls, no task retries, two checkpoints and a
   local draft PR after real pytest verification. A second variant starts with a
   large existing module and inserts using supplied sections far beyond its prefix.
+  Under #23, safe fixes remove the partial checkpoint's unused `Room` import;
+  the continuation appends that import alongside the tests that use it.
 
 Run these replays with `.venv/bin/python -m pytest -q tests/test_replays.py`.
 
@@ -60,3 +62,17 @@ fixtures in `test_replays.py`:
   LaunchDarkly is offline/disabled and publication is local; no remote side effects.
 
 Run these with `.venv/bin/python -m pytest -q tests/test_issue22_replays.py`.
+
+#23 adds `test_issue23_replays.py`, acceptance replay 17:
+
+- `replay_r2` uses the six-task `issue_23_r2_plan.json` receipt with raw Builder
+  pytest commands, long lines, an unused test import and simulated ANSI output.
+  Real gate-isolated pytest exposes the store/home-id bug and routes it to task 5
+  with budget left. Both quick E13 and full E15 repair paths reach DONE with a
+  persisted local draft PR. Assertions check checkpointed safe fixes, plain feedback
+  and reports, gate config/root/cwd, and retry accounting.
+- Unit cases cover command refusal and target extraction, safe versus unsafe fixes,
+  repository and nested Ruff configuration, changed-file lint scope, ancestor
+  isolation, and color suppression/stripping.
+
+Run these with `.venv/bin/python -m pytest -q tests/test_issue23_replays.py`.

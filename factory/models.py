@@ -3,7 +3,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+from factory.command_output import strip_ansi
 
 
 class Stage(str, Enum):
@@ -134,6 +136,8 @@ class BuildResult(BaseModel):
 
 
 class CommandReport(BaseModel):
+    _plain_output = field_validator("output")(strip_ansi)
+
     argv: list[str]
     exit_code: int
     output: str
@@ -141,6 +145,8 @@ class CommandReport(BaseModel):
 
 
 class VerifyResult(BaseModel):
+    _plain_actionable = field_validator("actionable")(strip_ansi)
+
     passed: bool
     commands: list[CommandReport]
     actionable: str

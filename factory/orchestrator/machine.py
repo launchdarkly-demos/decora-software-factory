@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from factory.clock import Clock, SystemClock
+from factory.command_output import strip_ansi
 from factory.context.repo import analyze_repo
 from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, InfrastructureError, SafetyError
 from factory.execution.portable import PortableWorkspace
@@ -16,7 +17,7 @@ from factory.execution.worktree import WorktreeManager
 from factory.governance.policy import Policy, review_plan, review_ship
 from factory.harness.base import AgentHarness
 from factory.launchdarkly.flags import LaunchDarklyService
-from factory.models import JobEvent, JobState, Stage, VerifyResult
+from factory.models import JobEvent, JobState, Stage
 from factory.observability.summary import build_summary
 from factory.observability.trace import JsonLog, Tracer
 from factory.orchestrator.graph import COMPONENTS, assert_legal
@@ -24,6 +25,7 @@ from factory.orchestrator.store import JobStore
 from factory.publish.pr import Publisher
 from factory.task_queue import current_task, missing_file_feedback, reopen_task, verification_feedback
 from factory.tools.layer import ToolLayer
+from factory.verification.commands import pytest_targets
 from factory.verification.gate import VerificationGate
 
 
@@ -336,19 +338,9 @@ class Factory:
         if missing:
             return self._task_correction(job, "\n".join(missing_file_feedback(job, path) for path in missing))
         if task.quick_test_targets or result.quick_test_commands:
-            reports = [tools.run(command) for command in result.quick_test_commands]
-            if task.quick_test_targets:
-                targeted = self.verifier.run_quick(job, tools, task.quick_test_targets)
-                reports.extend(targeted.commands)
-                # Scripted verifiers can return actionable text without commands.
-                if not reports:
-                    quick = targeted
-                else:
-                    quick = VerifyResult(passed=all(report.passed for report in reports), commands=reports,
-                                         classification="test", actionable="")
-            else:
-                quick = VerifyResult(passed=all(report.passed for report in reports), commands=reports,
-                                     classification="test", actionable="")
+            targets = list(dict.fromkeys([*task.quick_test_targets, *pytest_targets(result.quick_test_commands)]))
+            quick = self.verifier.run_quick(job, tools, targets)
+            reports = quick.commands
             job.quick_verify_runs.setdefault(task.id, []).append(quick)
             if not quick.passed:
                 output = "\n".join(report.output for report in quick.commands if not report.passed)
@@ -386,6 +378,7 @@ class Factory:
     def _task_correction(self, job: JobState, feedback: str, *, split: bool = False) -> Transition:
         task = current_task(job)
         assert task is not None
+        feedback = strip_ansi(feedback)
         job.govern_feedback = feedback
         if split:
             used_splits = job.task_split_attempts.get(task.id, 0)

@@ -91,7 +91,7 @@
           {
             "path": "tests/test_models.py",
             "kind": "append",
-            "new": "\nfrom app.project import Home\nfrom app.store import ROOMS, add_room\n\ndef test_duplicate_names_and_stable_context_keys():\n    home = Home(\"h1\", \"Home\")\n    first = Room(\"r1\", \"Bedroom\", home.key)\n    second = Room(\"r2\", \"Bedroom\", home.key)\n    add_room(first)\n    add_room(second)\n    assert first.name == second.name\n    assert first.key == \"r1\"\n    assert [room.home_id for room in ROOMS] == [home.key, home.key]\n"
+            "new": "\nfrom app.project import Home, Room\nfrom app.store import ROOMS, add_room\n\ndef test_duplicate_names_and_stable_context_keys():\n    home = Home(\"h1\", \"Home\")\n    first = Room(\"r1\", \"Bedroom\", home.key)\n    second = Room(\"r2\", \"Bedroom\", home.key)\n    add_room(first)\n    add_room(second)\n    assert first.name == second.name\n    assert first.key == \"r1\"\n    assert [room.home_id for room in ROOMS] == [home.key, home.key]\n"
           }
         ],
         "task_complete": true

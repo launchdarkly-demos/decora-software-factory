@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 
+from factory.command_output import strip_ansi
 from factory.errors import FactoryError
 from factory.tools.layer import ToolLayer
 from factory.verification.formatting import format_python
@@ -79,10 +80,44 @@ def prepare_staged(tools: ToolLayer, staged: dict[str, str | None]) -> None:
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(staged[path] or '')
+        # Mirror in-repo configuration, including edits/deletions in this proposal.
+        # Ancestor factory configuration must never enter the staging sandbox.
+        configs = set()
+        for path in paths:
+            parent = Path(path).parent
+            while True:
+                for name in ('.ruff.toml', 'ruff.toml', 'pyproject.toml'):
+                    rel = str(parent / name)
+                    if rel in staged or tools._resolve(rel).is_file():
+                        configs.add(rel)
+                if parent == Path('.'):
+                    break
+                parent = parent.parent
+        pending = list(configs)
+        while pending:
+            rel = pending.pop()
+            text = staged.get(rel) if rel in staged else tools.read(rel)
+            if text is None:
+                continue
+            destination = root / rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(text)
+            data = tomllib.loads(text)
+            settings = data.get('tool', {}).get('ruff', {}) if Path(rel).name == 'pyproject.toml' else data
+            if extend := settings.get('extend'):
+                extended = (tools.worktree / rel).parent / extend
+                try:
+                    extended_rel = str(extended.resolve().relative_to(tools.worktree))
+                except ValueError:
+                    raise FactoryError(f'{rel}: Ruff extend must stay inside the worktree.') from None
+                tools._resolve(extended_rel)
+                if extended_rel not in configs:
+                    configs.add(extended_rel)
+                    pending.append(extended_rel)
         try:
             format_python(ToolLayer(root, tools.policy), paths)
         except FactoryError as exc:
-            message = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', str(exc))
+            message = strip_ansi(str(exc))
             contexts = []
             for path in paths:
                 location = re.search(re.escape(path) + r':(\d+):(\d+)', message)

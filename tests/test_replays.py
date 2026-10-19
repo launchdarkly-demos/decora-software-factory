@@ -238,6 +238,9 @@ def test_replay_05_issue_19_insert_append_and_max_turns(
         if record.get('max_turns'):
             assert not harness.job.task_retries
             assert harness.job.checkpoint_shas['model_update'] == [harness.tools.head_sha()]
+            # #23 safe fixes remove unused imports even at partial checkpoints.
+            # The append-only continuation must import Room when it starts using it.
+            assert 'import Room' not in harness.tools.read('tests/test_models.py')
             raise MaxTurnsExceeded('test turn limit')
         proposal = BuildProposal.model_validate(record['proposal'])
         for edit in proposal.edits:

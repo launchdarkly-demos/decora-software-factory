@@ -14,7 +14,9 @@ from temporalio.client import WorkflowExecutionStatus
 from temporalio.common import WorkflowIDReusePolicy
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
+from factory.command_output import strip_ansi
 from factory.errors import FactoryError, GovernanceError
+from factory.gitcmd import git_env
 from factory.intake.load import parse_issue_body
 from factory.temporal.workflow import FactoryWorkflow
 from factory.tools.safety import check_content
@@ -36,14 +38,14 @@ class GitHubIssues:
         if body is not None:
             argv += ["--input", "-"]
         result = subprocess.run(argv, input=json.dumps(body) if body is not None else None,
-                                text=True, capture_output=True, timeout=60, check=False)
+                                text=True, capture_output=True, timeout=60, check=False, env=git_env())
         if result.returncode and missing_ok and "HTTP 404" in result.stderr:
             return None
         if result.returncode:
             raise FactoryError("GitHub request failed; check gh authentication and repository permissions")
         if not result.stdout.strip():
             return None
-        value = json.loads(result.stdout)
+        value = json.loads(strip_ansi(result.stdout))
         return [item for page in value for item in page] if pages else value
 
     def ready(self, label: str) -> list[dict]:

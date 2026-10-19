@@ -148,6 +148,12 @@ class ScriptedVerifier:
     def __init__(self, results) -> None:
         self.results = list(results)
 
+    def run_quick(self, job, tools, targets):
+        from factory.verification.gate import VerificationGate
+
+        return VerificationGate(tools.target_repo or tools.worktree, tools.worktree.parent / 'quick-home').run_quick(
+            job, tools, targets)
+
     def run(self, job, tools):
         return _take(self.results)
 

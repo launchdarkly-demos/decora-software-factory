@@ -10,6 +10,7 @@ from factory.task_queue import current_task
 from factory.tools.anchors import anchor_span
 from factory.tools.layer import ToolLayer, _anchor_error
 from factory.tools.safety import check_content
+from factory.verification.commands import pytest_targets
 
 
 def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> BuildResult:
@@ -170,6 +171,7 @@ def check_proposal_safety(tools: ToolLayer, proposal: BuildProposal) -> None:
             tools._resolve(rel)
         for value in (edit.content, edit.old, edit.new):
             _check_content_at(value, edit.path)
+    pytest_targets(proposal.commands)
     for command in proposal.commands:
         _check_content_at(" ".join(command), "<proposal>")
         try:

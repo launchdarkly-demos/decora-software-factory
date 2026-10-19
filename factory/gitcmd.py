@@ -8,6 +8,9 @@ from pathlib import Path
 def git_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """Identity for commits this process creates. Does not touch global git config."""
     env = dict(base or os.environ)
+    env["NO_COLOR"] = "1"
+    env.pop("FORCE_COLOR", None)
+    env.pop("CLICOLOR_FORCE", None)
     env["GIT_AUTHOR_NAME"] = "Decora Factory"
     env["GIT_AUTHOR_EMAIL"] = "factory@decora.local"
     env["GIT_COMMITTER_NAME"] = "Decora Factory"

@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from factory.command_output import plain_command, strip_ansi
 from factory.errors import FactoryError, SafetyError
 from factory.gitcmd import git_env
 from factory.governance.policy import Policy
@@ -22,6 +23,7 @@ class ToolLayer:
         self.target_repo = target_repo.resolve() if target_repo else None
 
     def run(self, argv: list[str], *, output_limit: int = 20_000) -> CommandReport:
+        argv = plain_command(argv)
         self.policy.check_command(argv)
         try:
             proc = subprocess.run(
@@ -39,7 +41,7 @@ class ToolLayer:
         except subprocess.TimeoutExpired as exc:
             output = f"timed out after {self.policy.command_timeout_seconds}s\n{exc}"
             return CommandReport(argv=argv, exit_code=124, output=output, passed=False)
-        output = (proc.stdout or "") + (proc.stderr or "")
+        output = strip_ansi((proc.stdout or "") + (proc.stderr or ""))
         if len(output) > output_limit:
             output = "[output truncated]\n" + output[-output_limit:]
         return CommandReport(
@@ -134,6 +136,9 @@ class ToolLayer:
         env["DECORA_PERSIST"] = "0"
         env["PYTHON_DOTENV_DISABLED"] = "1"
         env.update(self.policy.command_environment)
+        env["NO_COLOR"] = "1"
+        env.pop("FORCE_COLOR", None)
+        env.pop("CLICOLOR_FORCE", None)
         for key in ("LD_SDK_KEY", "LAUNCHDARKLY_SDK_KEY", "OPENAI_API_KEY", "LAUNCHDARKLY_API_TOKEN"):
             env.pop(key, None)
         return env

@@ -164,3 +164,13 @@ Live acceptance (§11) is outside this mock-only session and has not been claime
 | §3 short ASCII-only code anchors preferred | `prompts.py`; prompt regression | Covered |
 | §7 full path/kind/anchor rejected receipts after secret redaction | apply boundary and safety redaction; receipt tests | Covered |
 | §10/§11 replay_r4 applies garbled Room anchor and reaches DONE | `tests/test_issue25_replays.py:test_replay_r4` | Covered |
+
+## #26 / r5 rules (spec-first)
+
+| Spec rule | Implementation and regression work | Status |
+| --- | --- | --- |
+| §4 destructive removal >50%, ≥20 lines, rewrite_files opt-in; atomic checkpoint restore and lost-source feedback | `apply.py`, `models.py`; `test_issue26_replays.py` | Required by #26 |
+| §8 per-checkpoint production imports, target interpreter/environment, owner task correction; innermost production traceback routing | `gate.py`, `machine.py`, `task_queue.py`; replay_r5 and import units | Required by #26 |
+| §8 fixed issue/default flag key mandatory payload and logged deterministic override | `policy.py`, `openai_agents.py`, `policy.decora.yaml`; r5 wrong-key replay | Required by #26 |
+| §2 six-test/one-area task normalization; E1 on reopened tasks preserves splits, append guidance | planner prompt/normalizer, harness exception handling; replay_r5 and units | Required by #26 |
+| §10/§11 replay_r5 rejects truncation, repairs owner imports, splits reopened tests and reaches DONE | `tests/test_issue26_replays.py` | Required by #26 |

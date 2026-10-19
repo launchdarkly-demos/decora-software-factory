@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s #22, #23, #24 and #25 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s #22, #23, #24, #25 and #26 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -16,7 +16,7 @@ Status: approved, including Alexis’s #22, #23, #24 and #25 rules (Oct 18, 2026
 |---|---|---|---|
 | Intake | Watcher | Turns a labeled issue into a frozen feature request and starts a job | Change a running job |
 | Plan | Planner | Task list, files per task, test targets, flag key, risk, migration plan | Edit files |
-| Govern plan | Governance | Risk and flag rules, the human review gate | Rewrite the plan without a repair round |
+| Govern plan | Governance | Risk and flag rules, the human review gate | Change intent (fixed policy flag-key normalization is deterministic) |
 | **Build** | **Builder** | **Turning each task into file edits, one task at a time, until every task is checkpointed** | Run commands, touch protected paths, change the plan's intent |
 | Verify | Verification gate | Full test runs with a separate retry budget, sending failures back to the owning task | Edit files |
 | Flag gate | LaunchDarkly client | Making sure the flag exists in the policy project and is off in production | Turn the flag on |
@@ -29,7 +29,7 @@ The Builder's job ends when every plan task is checkpointed. Everything after th
 
 Every Builder call, whether first, a split continuation or a correction, must receive:
 
-1. **The task**: id, description, acceptance criteria, files, optional quick tests and dependencies.
+1. **The task**: id, description, acceptance criteria, files, optional quick tests, dependencies and `rewrite_files: list[str]` (default empty; deliberate rewrites only). Test tasks cover one behavior area and at most six test functions; migration and compatibility tests must be separate tasks, creating or appending to a test file. Governance deterministically splits broad test tasks by acceptance area, file and batches of at most six checks, preserving dependencies.
 2. **Finished-task summaries**: id plus a summary of up to 600 characters for each checkpointed task, in order.
 3. **Current file context**, read from the worktree at the latest checkpoint on every call. Never cached.
    - **Small file** (≤ `whole_file_limit`, see §13): the whole file, verbatim.
@@ -86,7 +86,8 @@ All checks run on the fully staged proposal **before any file is written**. If a
 3. **Content safety (fatal)**: the new content contains no credential values from the factory environment and nothing matching the secret patterns (API keys, tokens, SDK keys, private keys).
 4. **Syntax (correction)**: every staged `.py` file is parsed (`ast.parse`). Planned JSON, YAML and TOML files are parsed too. On failure, the correction gives the file, line, column and message, plus about 20 lines of the staged text around the error. Formatting (`ruff format`) runs only after syntax passes, and a formatting failure is a correction with the same detail.
 5. **Files added to the plan automatically (no pause, no correction)**: any path that passes checks 2 and 3 but isn't in the plan is added to the plan and recorded in `auto_added_files`, together with the task that added it. This includes `__init__.py` files for new packages. The rule covers create, write, edit and the destination of a move.
-6. **Module names (correction)**: a new `.py` path must have valid Python names for the module and every package folder above it (no leading digits, no keywords).
+6. **Destructive edits (E9 correction)**: compare each existing file before and after the whole staged proposal. Reject removal of more than 50% of its original lines (diff removed lines, even if replaced), except files under 20 lines or paths explicitly in the current task’s `rewrite_files`. Quote the head of the removed region and removed/total counts. On rejection restore touched tracked paths with `git restore --source=<last checkpoint sha>`; discard proposal-created files. No partial multi-file proposal may persist.
+7. **Module names (correction)**: a new `.py` path must have valid Python names for the module and every package folder above it (no leading digits, no keywords).
 
 Before quick or full verification, run `ruff check --fix` with safe fixes only, then `ruff format`, on changed `.py` files after syntax passes. Include these automatic edits in the task checkpoint commit. Respect the target repository's Ruff configuration; otherwise isolate Ruff from the factory/ancestor config and use correctness rules `E9` and `F` minus auto-fixable rules for the lint gate. Never gate line length without repository configuration.
 
@@ -103,7 +104,7 @@ Each error belongs to one of three classes:
 
 | # | Error | Class | Feedback (exact content) |
 |---|---|---|---|
-| E1 | Output cut off (token limit / `incomplete`) | Split | "Your response was cut off at N tokens. Return a smaller part of this task now with `task_complete=false`; the rest follows in the next call. Prefer insert/append over rewriting whole files." |
+| E1 | Output cut off (token limit / `incomplete`) | Split | "Your response was cut off at N tokens. Return a smaller part of this task now with `task_complete=false`; the rest follows in the next call. Prefer insert/append over rewriting whole files." For test tasks, request at most six tests per call using append. Reopened/correction calls use the same split allowance; preserve IncompleteBuildError through wrappers. |
 | E2 | Turn limit hit (`MaxTurnsExceeded`) | Split | "You ran out of turns (N). The current file text is included; return the next part of the task directly, using at most K reads." |
 | E3 | Proposal malformed or schema invalid | Correction | Validation errors (field and reason), plus "Return one complete BuildProposal." |
 | E4 | Empty proposal / no edits without `task_complete=true` | Correction | "No edits returned. Make concrete edits for task T, or set `task_complete=true` if the task is already done at this checkpoint." |
@@ -163,6 +164,10 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 Every rejected proposal must append a receipt to the run’s `rejected_edits.jsonl`, retaining each edit’s path, kind and full anchor after secret redaction, including safety rejections. Receipts must never contain environment credential values or credential-pattern matches.
 
 ## 8. Verification, routing failures back, the flag gate and the PR
+
+**Per-checkpoint imports.** After every task checkpoint, including partial parts and applied corrections, import every changed production Python module with the target interpreter, cwd=worktree and the verification environment. Use `python -c` with `importlib.import_module` per module; exclude tests and map standalone scripts by path with importlib file loading. An import failure reopens the task whose files include that module (otherwise current task), retains the checkpoint and traceback, and consumes a task correction, never `verify_retries`. Collection/import tracebacks route to the innermost production frame’s owner before test-file ownership.
+
+**Fixed flag keys.** `flags.issue_flag_keys` maps canonical `owner/repo#number`, numeric issue strings, or full GitHub issue URLs to keys; `default_key` is an optional fallback. Example: `{"arober39/decor-agent#8": "decora-room-home-migration"}`. The planner payload declares the fixed key mandatory when the job requires a flag. Governance sets/overrides `plan.flag_key` deterministically and logs old/new values; a different planner key is replaced without a repair round.
 
 **Quick tests.**
 - Run only after a checkpoint reporting `task_complete=true`, on that task's `quick_test_targets`. Never run on partial parts, including proposal commands that are quick tests.
@@ -257,6 +262,8 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 | Ops | Live runs blocked by manual job IDs, port and address mix-ups, project key changes | §9 rerun via label; §11 live definition of done |
 | #25 / `job-gh-5873513712-r4` | Escaped non-ASCII payloads garbled `Room→Home` into `Room\x192Home`; multi-line feedback hid divergence and full rejected anchors were lost | §2 verbatim payloads; §3 unique escape-artifact fallback and ASCII code anchors; §5 divergence feedback; §7 redacted rejected-edit receipts |
 
+| #26 / `job-gh-5873513712-r5` | `app/store.py` shrank from 241 lines to 3; collection errors went to tests; reopened test cutoff spent retries; flag key drift | §4 destructive guard and checkpoint restore; §8 per-checkpoint imports and innermost production owner; §2 bounded test normalization; E1 split preservation; §8 fixed policy key |
+
 ## 11. Acceptance criteria
 
 **Replay suite** (mock harness, in CI, each must reach `DONE` with a draft PR record):
@@ -323,3 +330,5 @@ Items 1–13 describe the baseline implementation changes already delivered on t
 - **Above 64 KB:** outline plus ranked sections, as today. Because of §3, a section only helps the Builder; it's never a requirement for an edit to be accepted.
 - **Don't** raise output limits to fit whole-file rewrites. Use insert/replace/append for existing files, so output stays small even when the input is large.
 - **Revisit** if the factory moves to a model with a smaller context window. The limits are policy settings, so that's a configuration change, not a code change.
+
+**#26 / replay_r5.** Reject and restore a replace truncating `app/store.py` to three lines, preserving other proposal files; charge a broken production import to its owning task with no verify retry; reopen a test task, truncate its correction and use split allowance; repair and reach DONE with a persisted draft PR. Replay the r5 plan’s wrong flag key and prove deterministic policy override. Unit coverage includes threshold/exemption/explicit rewrite, import mapping/environment, traceback routing, normalization/dependencies and split exhaustion.

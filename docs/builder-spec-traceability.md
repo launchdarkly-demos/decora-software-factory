@@ -187,3 +187,9 @@ The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file l
 | #27 billing/auth and exhausted infrastructure pause at current stage; checkpoints survive continue | `factory/github/issues.py` resumes provider pauses on an authorized retry label and renders the provider code | replay_r6 plus PLAN/REVIEW and status coverage |
 | #28 exactly one required production flag owner, inserted before tests without send-back | `factory/plan_normalization.py`, `factory/governance/policy.py` | replay_r6 normalization, idempotence and ownership tests |
 | #28 insertion logged, saved in plan receipt and PR body | orchestrator plan logging, ImplementationPlan, PR renderer | replay receipt and PR assertions |
+
+## #28 follow-up (r7)
+
+| Rule | Implementation | Regression evidence |
+| --- | --- | --- |
+| §8 owner precedence, canonical contract completion, provision-task merge and dependency repair; idempotence | `factory/plan_normalization.py` | `tests/test_issue28_r7_replays.py`: captured r7 replay with/without echoed provision task, idempotence and cycle regressions |

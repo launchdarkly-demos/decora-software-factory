@@ -263,6 +263,16 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 
 **Outages.** If GitHub or the watcher goes down, jobs keep running in Temporal. A failed sync is retried on the next poll. An empty `FactoryError` log line isn't acceptable; logs must say which job failed and why.
 
+**Issue triggers (policy-driven, multi-target).** With `factory temporal watch-issues --policy <file>`, intake uses policy `issue_triggers`: `ready_label` / `retry_label` (defaults `factory:ready` / `factory:retry`), `authors` (OPEN issues from allowlisted logins start a job with no label), `labelers` (when non-empty, the ready/retry label actor must be on the allowlist **and** have write/maintain/admin), `agent_accounts` (extra logins treated as both authors and labelers; compare case-insensitively, including the `[bot]` suffix form), and optional `slug` (worker refuses to start when it disagrees with the checkout origin). Without `--policy`, the watcher keeps today's label + collaborator-write behavior. Non-allowlisted issues are ignored once (log, no comment). Comments are never instructions. Author triggering is ledger-idempotent (one job per issue; retries only via retry label by an allowlisted labeler). Job IDs stay `job-gh-<issue.id>` / `-r<n>` (globally unique across targets).
+
+## Multiple targets and externally managed flags
+
+The factory may serve more than one checkout at once. Behavior is **policy-driven**; never hard-code a repository name.
+
+**`flags.management`.** Values: `factory` (default; current behavior — factory plans, inserts, audits, and provisions flags) or `external` (required `flags.external_reason` text). When `external`: `flag_required()` is false for every change class; the planner payload states that flags and guarded rollouts are managed externally (include the reason) and must not be introduced; `normalize_flag_task` does not insert an owner and strips planner `flag_key` / guarded-rollout fields (logged in `normalization_notes`); `audit_flag` is not run in reviewer, verification gate, or `govern_ship`; `ensure_flag` skips with `FlagAssurance.mode == "external"` and a detail naming the reason, and the LaunchDarkly client is never constructed or called (even with `--ld live`); the PR body states that flags and guarded releases are managed by LaunchDarkly Release Autopilot (`flags.management=external`) using the reason. Validation: `external` plus non-empty `issue_flag_keys` or `default_key` is a policy load error. **`flags.enabled: false`** still means no flags at all (no audits, no provisioning, no planner flag work). **`management: external`** means flags may exist in the product, but another system owns them — the factory must not plan, create, or audit them.
+
+**Separate target runtime.** Each target uses its own task queue, home (worker + watcher ledger), `--repo`, `--policy`, and base ref. Example: personal `arober39/decor-agent` keeps `policy.decora.yaml` / `decora-factory` / `.factory/decora`; org `launchdarkly-demos/decor-agent` uses `policy.decora-org.yaml` (`flags.management: external`, draft-only PRs, `issue_triggers` for Alexis/agent logins), queue `decora-factory-org`, homes `.factory/decora-org` and `.factory/github-org`. See [running-a-second-target.md](running-a-second-target.md).
+
 ## 10. Past failures mapped to rules
 
 | Failure | What broke | Rule that prevents it |
@@ -291,6 +301,7 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 | #28 / `job-gh-5873513712-r6` | Required key existed without a production flag task; human plan send-back needed | §8 deterministic required flag task before tests, governance check and receipts |
 | #29 / `job-gh-5873513712-r7` | Guard rejected rewrites of a same-job stub; E9 asked Builder to change plan fields; stale task scope survived plan revisions | §4 base-content-only guard and actionable E9; §8 plan-file consistency; §11 replay_r7 |
 | r8 / `job-gh-5873513712-r8` | Policy-fixed key `decora-room-home-migration` treated as issue-supplied existing flag; GET 404 paused ensure_flag after verification | §8 ensure_flag: only intake `feature.flag_key` must pre-exist; fixed/planner keys are created when missing; §11 replay_r8 |
+| Org / Release Autopilot | Factory planned/audited/provisioned flags on a repo where LaunchDarkly Release Autopilot already owns them | Multiple targets + `flags.management=external`; §11 org-target replay |
 
 ## 11. Acceptance criteria
 
@@ -323,6 +334,8 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 **#29 / replay_r7.** Task A creates a 35-line stub absent at base; task B replaces all of it and reaches DONE with a persisted draft PR. Base-file removal >50% still rejects atomically with checkpoint restore and actionable E9. Regressions exempt earlier job additions in existing files and prove stale plan files are removed from tasks/flag owners, empty tasks are removed with transitive dependency repointing, and normalization notes and idempotence are preserved.
 
 **r8 / replay_r8.** With a fake LaunchDarkly client: a policy-fixed key and GET 404 creates a boolean temporary default-off flag and the job proceeds past ensure_flag; an issue-supplied key and 404 still raises the existing-flag error; an existing flag (GET 200) is reused unchanged.
+
+**Org target / `flags.management=external`.** Replay an org job (mock harness; plan with a planner `flag_key` and a `provision_flag`-like task) under `policy.decora-org.yaml`: no flag task, `flag_key` stripped, no audit, `ensure_flag` skipped with zero LaunchDarkly client calls even in live mode, job reaches DONE with a draft PR body mentioning Release Autopilot. The same plan under `policy.decora.yaml` still requires and inserts the flag task and audits default-off. Cover policy validation errors, `issue_triggers` (allowlisted author without label once; non-allowlisted ignored; label by non-allowlisted collaborator ignored when `labelers` set; allowlisted writer triggers; bot `[bot]` matching; watcher without `--policy` unchanged), and job-id non-collision across targets.
 
 **Live definition of done** (decor-agent, real model, `--ld live --push`):
 - A maintainer labels an issue with a high-risk migration plan (the #8/#12 room-home migration). The watcher starts the job without anyone typing a job ID.

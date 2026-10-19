@@ -211,6 +211,16 @@ The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file l
 | §8 only intake `feature.flag_key` means existing-flag-required; policy-fixed/`default_key`/planner keys are created on 404 | `factory/governance/policy.py:issue_supplied_flag_key`; `factory/launchdarkly/flags.py:_sync` | Covered |
 | §10/§11 replay_r8: fixed key 404→POST create default off; issue key 404 still errors; GET 200 reuse unchanged | `tests/test_launchdarkly.py:test_replay_r8_*` | Covered |
 
+## Multiple targets and externally managed flags (spec-first)
+
+| Rule | Implementation and regression work | Status |
+| --- | --- | --- |
+| `flags.management` factory\|external; external ⇒ flag_required false, strip flag fields, no audit, ensure_flag mode external, no LD client | `policy.py`, `plan_normalization.py`, `reviewer.py`, `gate.py`, `launchdarkly/flags.py`, `publish/pr.py`, `openai_agents.py` | Covered |
+| `external` + issue_flag_keys/default_key is a load error; enabled:false vs external documented | `policy.py:load_policy`; `docs/running-a-second-target.md` | Covered |
+| `issue_triggers` + watch-issues `--policy`; author/labeler/bot allowlists; without `--policy` unchanged | `github/issues.py`; `temporal/cli.py` | Covered |
+| Separate org policy/runtime; worker refuses mismatched issue_triggers.slug | `policy.decora-org.yaml`; worker start check | Covered |
+| §10/§11 org replay: external strips flag task; same plan under policy.decora.yaml still inserts/audits; triggers + job-id uniqueness | `tests/test_org_target.py` | Covered |
+
 ## Safeguard calibration (r1-r7 sweep)
 
 | Rule | Implementation | Regression / evidence |

@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s #22, #23 and #24 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s #22, #23, #24 and #25 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -40,6 +40,8 @@ Every Builder call, whether first, a split continuation or a correction, must re
 5. **Flag context**: the key, its default (off), and whether a flag is required.
 6. **Limits for this call**: how many output tokens and turns it has left, so the Builder can size its answer.
 
+Every model payload (Planner, Builder, Reviewer and structured read-tool results) must use `json.dumps(..., ensure_ascii=False)` so source characters remain verbatim.
+
 The context is **for convenience, not a gate**. The Builder can read anything else it needs with the read tools (§3), and nothing it proposes is rejected for lack of having "seen" it.
 
 ## 3. Action set
@@ -68,7 +70,7 @@ Read actions are tools the Builder calls during its turn. Write actions are entr
 | `delete` | `path` | File exists; the path passes safety checks |
 | `move` | `path`, `new_path` | Source exists, destination doesn't; both paths pass safety checks. The destination is added to the plan automatically |
 
-**When an anchor is valid, exactly.** Check at apply time against staged text. A non-empty anchor with exactly one exact match is valid. More than one exact match is E6. If there are zero exact matches, retry once with Unicode NFC normalization and folding of control/confusable characters on both sides. The folding must cover the observed arrow `→` versus mangled control `\x12`, canonical composed/decomposed characters, typographic quotes/dashes and invisible formatting characters. Accept only exactly one normalized match, map it back to the exact original span, and preserve surrounding original text (including the original anchor for insert actions). Zero normalized matches is E5; multiple matches is E6. Never guess between candidates. Record fallback use, path and original span in the checkpoint log. Whether the Builder read or was shown the anchor is irrelevant. E5 closest lines escape all non-ASCII/control characters so they are visible.
+**When an anchor is valid, exactly.** Check at apply time against staged text. A non-empty anchor with exactly one exact match is valid. More than one exact match is E6. If there are zero exact matches, retry once with Unicode NFC normalization and folding of control/confusable characters on both sides. The folding must cover the observed arrow `→` versus mangled control `\x12`, canonical composed/decomposed characters, typographic quotes/dashes and invisible formatting characters. Accept only exactly one normalized match, map it back to the exact original span, and preserve surrounding original text (including the original anchor for insert actions). Multiple normalized matches is E6. If exact and NFC/folded matching both find zero matches, an escape-artifact fallback may run: each run of C0 controls other than tab/newline, including any trailing hex digits from a garbled escape (such as `\x19` + `2`), or literal `\uXXXX` sequences stands for exactly one non-ASCII source character. All other characters match literally. Accept only an exact single candidate span; zero matches is E5 and multiple matches is E6. Never guess between candidates. Record fallback use, path and original span in the checkpoint log. Whether the Builder read or was shown the anchor is irrelevant. Report escape-artifact fallback use exactly like NFC fallback use. Builder instructions should prefer short, ASCII-only anchors on code lines over docstrings or prose. E5 feedback must show the longest anchor prefix occurring in the file, the first divergent anchor line, and ±5 verbatim file lines around the divergence (with numbered labels). Escaped closest-line hints may be included additionally.
 
 Edits run in the order they're listed, against the staged text. Edits that conflict, such as two creates of the same path, or an edit after a delete or move of the same file, are a correction.
 
@@ -105,7 +107,7 @@ Each error belongs to one of three classes:
 | E2 | Turn limit hit (`MaxTurnsExceeded`) | Split | "You ran out of turns (N). The current file text is included; return the next part of the task directly, using at most K reads." |
 | E3 | Proposal malformed or schema invalid | Correction | Validation errors (field and reason), plus "Return one complete BuildProposal." |
 | E4 | Empty proposal / no edits without `task_complete=true` | Correction | "No edits returned. Make concrete edits for task T, or set `task_complete=true` if the task is already done at this checkpoint." |
-| E5 | Anchor matches 0 times after the single fallback | Correction | File, the first 200 characters of the anchor, and the 3 closest matching lines with line numbers and non-ASCII/control characters escaped. "Anchors must occur exactly once in the current file." |
+| E5 | Anchor matches 0 times after the fallbacks | Correction | File, the first 200 characters of the anchor, longest occurring anchor prefix, first divergent anchor line, and ±5 verbatim file lines around the divergence; optional escaped closest-line hints. "Anchors must occur exactly once in the current file." |
 | E6 | Anchor matches more than once | Correction | File, number of matches, and line numbers of each. "Extend the anchor until it's unique." |
 | E7 | Empty anchor on `replace`/`insert_*` | Correction | "`replace` and `insert_*` need a non-empty unique anchor. To add code without one, use `append` or `prepend`." |
 | E8 | Conflicting edits (create of an existing path, edit after delete, move onto an existing path) | Correction | Both edits and why they conflict |
@@ -157,6 +159,8 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 - **JobState** keeps: `current_task_id`, `completed_task_ids`, `checkpoint_shas`, `task_retries`, `verify_retries_used`, `verification_task_routes`, `task_split_attempts`, `builder_calls`, `auto_added_files`, `deleted_files` and `task_summaries`.
 - **Resume after a crash, worker restart or Temporal replay:** reset the worktree to the latest checkpoint commit, rebuild the file context from disk, and continue from `current_task_id`. Uncommitted edits are thrown away.
 - A correction or split always starts from the latest checkpoint, never from a half-applied proposal, because apply is all-or-nothing.
+
+Every rejected proposal must append a receipt to the run’s `rejected_edits.jsonl`, retaining each edit’s path, kind and full anchor after secret redaction, including safety rejections. Receipts must never contain environment credential values or credential-pattern matches.
 
 ## 8. Verification, routing failures back, the flag gate and the PR
 
@@ -251,6 +255,7 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 | #23 / `job-gh-5873513712-r2` | Raw quick pytest inherited factory config; style lint exhausted verify retries; ANSI leaked into feedback | §4/§8 gate-only quick tests, safe fixes + format in checkpoint, correctness lint unless repo config; §5 plain tool output |
 | #24 / `job-gh-5873513712-r3` | Default-off evaluations rejected; flag repairs routed to tests-only task three times, ending at E22 | §8 both evidence forms, prompt convention and flag-owner routing |
 | Ops | Live runs blocked by manual job IDs, port and address mix-ups, project key changes | §9 rerun via label; §11 live definition of done |
+| #25 / `job-gh-5873513712-r4` | Escaped non-ASCII payloads garbled `Room→Home` into `Room\x192Home`; multi-line feedback hid divergence and full rejected anchors were lost | §2 verbatim payloads; §3 unique escape-artifact fallback and ASCII code anchors; §5 divergence feedback; §7 redacted rejected-edit receipts |
 
 ## 11. Acceptance criteria
 
@@ -286,6 +291,8 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
   - the PR body has every §8 section, including the automatically added files;
   - total Builder calls ≤ `max_job_attempts`, and cost within the §6 estimate.
 - This must happen on **two consecutive live runs**, with the second on a different issue, so one lucky run doesn't count as done.
+
+**#25 / replay_r4.** A Builder proposal anchored on `"""\nProject store. Memory by default; the server can persist rooms to a JSON file.\n\nRoom\x192Home Migration Robustness` against `Room→Home` must apply via the escape-artifact fallback and reach DONE through the mock harness. Regressions must cover verbatim non-ASCII model payloads, ambiguous fallback rejection, longest-prefix/divergent-line/±5 verbatim feedback, and full rejected-edit receipts with secret redaction.
 
 ## 12. Change list status (baseline 989c214)
 

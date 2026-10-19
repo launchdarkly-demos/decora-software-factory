@@ -153,3 +153,14 @@ Live acceptance (§11) is outside this mock-only session and has not been claime
 | §8 Planner/Builder FLAG_KEY + FLAG_DEFAULT=False and default=FLAG_DEFAULT | [prompts.py](../factory/agents/prompts.py); `test_prompt_convention` | Covered |
 | §8 Flag audit routes to flag-module/key-file owner, never tests-only | [machine.py:_verify](../factory/orchestrator/machine.py); `test_flag_failure_routes_to_owner` (flag module and alternate key-file owner), repair variant of `test_replay_r3` | Covered |
 | §10/§11 r3 reaches DONE with persisted draft PR | [test_issue24_replays.py:test_replay_r3](../tests/test_issue24_replays.py) (default-off and true-default repair variants; real Git/pytest/audit/review/policy/local publication) | Covered |
+
+## #25 / r4 rules (spec-first)
+
+| Spec rule | Implementation and regression work | Status |
+| --- | --- | --- |
+| §2 ensure_ascii=False in all model payloads and structured read results | `openai_agents.py`, `repository_tools.py`; non-ASCII payload tests | Required by #25 |
+| §3 unique escape-artifact fallback, original span and NFC-style reporting | `anchors.py`, `apply.py`; replay_r4 and ambiguity tests | Required by #25 |
+| §5 longest occurring prefix, first divergent line, ±5 verbatim context | `layer.py`; divergence feedback tests | Required by #25 |
+| §3 short ASCII-only code anchors preferred | `prompts.py`; prompt regression | Required by #25 |
+| §7 full path/kind/anchor rejected receipts after secret redaction | apply boundary and safety redaction; receipt tests | Required by #25 |
+| §10/§11 replay_r4 applies garbled Room anchor and reaches DONE | `tests/test_issue25_replays.py:test_replay_r4` | Required by #25 |

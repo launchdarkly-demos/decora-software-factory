@@ -202,3 +202,16 @@ The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file l
 | §4 E9 keep existing lines, small replace/insert edits, no plan-field advice | `factory/agents/apply.py`; base-file rejection regression | Covered |
 | §8 task scope within plan.files, remove empty tasks and repoint dependencies with notes | `factory/plan_normalization.py`; captured r7 plan regression | Covered |
 | §10/§11 replay_r7 35-line stub fully replaced by its owner, DONE/draft | `tests/test_issue29_replays.py:test_replay_r7` | Covered |
+
+## Safeguard calibration (r1-r7 sweep)
+
+| Rule | Implementation | Regression / evidence |
+|---|---|---|
+| §3 unique whitespace fallback; full small-file E5; empty conversion | `anchors.py`, `apply.py` | `test_safeguard_sweep_replays.py`; r4 anchor, r6 log 9–11 |
+| §4 ≥80 base-line E9; new/job lines exempt | `apply.py` | updated #26/#29 guard tests; r7 log 20–23 |
+| E1/E2/E21 never spend corrections; hard job cap retained | `machine.py` | sweep cutoff replay; r5 log 38 |
+| §5/§6 shrinking failures free ≤3 consecutively; defaults 4/4/40 | `machine.py`, `models.py`, `policy.py`, `policy.decora.yaml` | sweep progress replay; r1 test retry exhaustion |
+| §8 equivalent False defaults and unknown/True refusal | `flags.py` | sweep flag parametrizations; #24/r3 |
+| §2 six-test guidance; §8 production routing | planner normalization and `task_queue.py` | sweep >6 tests; #22/#26 routing replays |
+| §4/§8 safe Ruff fix/format before imports/tests | `staging.py`, `formatting.py` (unchanged) | #23 replays and sweep formatting |
+| E18 backoff / provider quota pause; safe auto-add; pytest command refusal; plan repair pause | existing provider, apply, command and governance code (unchanged) | #27/#28 and safety/command/plan regressions; sweep audit report |

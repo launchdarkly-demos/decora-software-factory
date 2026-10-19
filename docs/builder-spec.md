@@ -29,7 +29,7 @@ The Builder's job ends when every plan task is checkpointed. Everything after th
 
 Every Builder call, whether first, a split continuation or a correction, must receive:
 
-1. **The task**: id, description, acceptance criteria, files, optional quick tests, dependencies and `rewrite_files: list[str]` (default empty; deliberate rewrites only). Test tasks cover one behavior area and at most six test functions; migration and compatibility tests must be separate tasks, creating or appending to a test file. Governance deterministically splits broad test tasks by acceptance area, file and batches of at most six checks, preserving dependencies.
+1. **The task**: id, description, acceptance criteria, files, optional quick tests, dependencies and `rewrite_files: list[str]` (default empty; deliberate rewrites only). Test tasks should cover one behavior area and at most six test functions (planning/splitting guidance, never an apply rejection); migration and compatibility tests must be separate tasks, creating or appending to a test file. Governance deterministically splits broad test tasks by acceptance area, file and batches of at most six checks, preserving dependencies.
 2. **Finished-task summaries**: id plus a summary of up to 600 characters for each checkpointed task, in order.
 3. **Current file context**, read from the worktree at the latest checkpoint on every call. Never cached.
    - **Small file** (≤ `whole_file_limit`, see §13): the whole file, verbatim.
@@ -72,6 +72,10 @@ Read actions are tools the Builder calls during its turn. Write actions are entr
 
 **When an anchor is valid, exactly.** Check at apply time against staged text. A non-empty anchor with exactly one exact match is valid. More than one exact match is E6. If there are zero exact matches, retry once with Unicode NFC normalization and folding of control/confusable characters on both sides. The folding must cover the observed arrow `→` versus mangled control `\x12`, canonical composed/decomposed characters, typographic quotes/dashes and invisible formatting characters. Accept only exactly one normalized match, map it back to the exact original span, and preserve surrounding original text (including the original anchor for insert actions). Multiple normalized matches is E6. If exact and NFC/folded matching both find zero matches, an escape-artifact fallback may run: each run of C0 controls other than tab/newline, including any trailing hex digits from a garbled escape (such as `\x19` + `2`), or literal `\uXXXX` sequences stands for exactly one non-ASCII source character. All other characters match literally. Accept only an exact single candidate span; zero matches is E5 and multiple matches is E6. Never guess between candidates. Record fallback use, path and original span in the checkpoint log. Whether the Builder read or was shown the anchor is irrelevant. Report escape-artifact fallback use exactly like NFC fallback use. Builder instructions should prefer short, ASCII-only anchors on code lines over docstrings or prose. E5 feedback must show the longest anchor prefix occurring in the file, the first divergent anchor line, and ±5 verbatim file lines around the divergence (with numbered labels). Escaped closest-line hints may be included additionally.
 
+**Whitespace fallback.** After exact, NFC/folded and escape-artifact fallbacks find no match, normalize CRLF, trailing whitespace, indentation and internal horizontal whitespace per line. Accept only a unique span, preserve original source offsets and log it like the other fallbacks. Ambiguity remains E6. For failed replace anchors that share a nonblank source line with a small (<80 current lines) or job-created file, E5 includes the full current text and suggests a whole-file write; never apply a guessed write.
+
+**Empty anchors.** Convert empty insert_after to append and insert_before to prepend. Convert empty replace to write of `new` only when the staged path is absent or empty; reject an existing nonempty file with full current text when small/job-created. Log every conversion in checkpoint metadata. All safety and atomicity checks still apply.
+
 Edits run in the order they're listed, against the staged text. Edits that conflict, such as two creates of the same path, or an edit after a delete or move of the same file, are a correction.
 
 ## 4. Checks before anything is written
@@ -110,7 +114,7 @@ Each error belongs to one of three classes:
 | E4 | Empty proposal / no edits without `task_complete=true` | Correction | "No edits returned. Make concrete edits for task T, or set `task_complete=true` if the task is already done at this checkpoint." |
 | E5 | Anchor matches 0 times after the fallbacks | Correction | File, the first 200 characters of the anchor, longest occurring anchor prefix, first divergent anchor line, and ±5 verbatim file lines around the divergence; optional escaped closest-line hints. "Anchors must occur exactly once in the current file." |
 | E6 | Anchor matches more than once | Correction | File, number of matches, and line numbers of each. "Extend the anchor until it's unique." |
-| E7 | Empty anchor on `replace`/`insert_*` | Correction | "`replace` and `insert_*` need a non-empty unique anchor. To add code without one, use `append` or `prepend`." |
+| E7 | Empty replace anchor on an existing nonempty file | Correction | Use a unique anchor or explicit whole-file write; empty inserts and empty/missing-file replacements convert under §3 without a retry. |
 | E8 | Conflicting edits (create of an existing path, edit after delete, move onto an existing path) | Correction | Both edits and why they conflict |
 | E9 | Syntax/parse error, destructive proposal (§4), or checkpoint import failure (§8) | Correction | File:line:col, message, about 20 lines of staged context with a caret |
 | E10 | Formatter failure | Correction | The formatter's message with ANSI codes stripped, plus the E9 context |
@@ -124,12 +128,23 @@ Each error belongs to one of three classes:
 | E18 | Model/network error (5xx, timeout, connection), HTTP 429 / RateLimitError with transient codes such as rate_limit_exceeded | Infrastructure: up to 3 retries; honor retry-after / x-ratelimit-reset-* with exponential backoff plus jitter capped at 60s; injectable sleep. Never charge task retries or splits. Exhaustion pauses at the current stage | Safe provider code logged |
 | E19 | Task retries exhausted | **Fatal** for the job | "Task T exhausted N retries; last error: …" |
 | E20 | Job attempt cap reached | **Fatal** | "Job reached max_job_attempts (N)." |
-| E21 | Splits exhausted for a task | After `split_attempts`, each further E1/E2 counts as a correction (E19 applies) | Same text as E1/E2 |
+| E21 | Split allowance exhausted | Continue with smaller-scope prompts, charged only to `max_job_attempts`; never a task retry | Request one small region or at most one test per call, using append/insert |
 | E22 | Full-verification retry budget exhausted | **Fatal** | "E22: Job exhausted verify_retries (N); last verification failure: …" |
 
 **Provider blocks (#27).** Inspect exc.code, exc.body and response JSON for the error code without logging secrets. HTTP 429 insufficient_quota, credit_balance_exhausted or billing codes, and 401/403 authentication errors, immediately raise ProviderBlockedError and pause at AWAIT_HUMAN, never FAILED. Preserve checkpoints and resume_stage = the current BUILD/PLAN/REVIEW stage. Question: `Provider billing/credentials problem: <code>. Fix the OpenAI account, then answer continue (or add factory:retry).` The GitHub watcher status comment includes the provider error code. Planner and Reviewer use the same classification and infrastructure retry/pause rules.
 
 Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies to ordinary Builder corrections; a full-verification failure itself cannot cause E19.
+
+## Safeguard calibration (r1-r7 sweep)
+
+- E9 applies only to base-commit files with at least 80 base lines and only removed base content; job-created files and job-added lines rewrite freely (§4).
+- Anchors use unique whitespace fallback and actionable whole-file feedback; empty inserts convert without correction (§3).
+- Output/turn cutoffs always split, even after the split allowance; smaller continuations consume only the hard job-call cap (40). Task and verification retry defaults are 4.
+- A retry with a strictly shrinking failing-test set or decreasing failing count is uncharged, at most three consecutive times per owning task and budget (quick/task vs full verification). Persist the preceding failure signature and streak. No identified failures means no progress credit. A charged correction or success resets the streak. Unrelated failures cannot qualify solely by IDs; sets must be a strict subset (or an explicit pytest summary count must decrease).
+- Flag audit accepts typed declarations, any constant bound to False used as the evaluation default, literal keyword/positional False and LD variation(key, ctx, False). True or unknown evaluation defaults still fail, even alongside a False declaration.
+- Six tests is planning guidance; apply never counts/rejects test functions. Production-caused test failures route to production owners. Safe Ruff fixes and format run before checkpoint imports, quick tests and full verification; unfixable errors remain corrections.
+- Transient provider backoff spends no task retries/splits; quota/auth pauses preserve checkpoints. Quick commands remain pytest-only because Builder commands are untrusted; safe extra files are auto-added. Plan repair stays bounded and pauses for intent/structure problems after deterministic normalization.
+- E16/E17, protected/escaping/deny paths, default-off flags, Builder git push/reset prohibitions, no pushes to main and the hard max_job_attempts cap are unchanged.
 
 ## 6. Budgets
 
@@ -137,10 +152,10 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 |---|---|---|---|
 | Output tokens per Builder call | `builder_max_output_tokens` | 6000 | **16000** (gpt-4.1 allows 32k of output; fewer splits) |
 | Turns per Builder call | `builder_max_turns` | 40 | 40 |
-| Full-verification retries per job | `verify_retries` | 3 | 3 |
-| Retries per task | `per_task_retries` | 3 | 3 |
+| Full-verification retries per job | `verify_retries` | 3 | 4 |
+| Retries per task | `per_task_retries` | 3 | 4 |
 | Splits per task | `split_attempts` | 3 | 4 |
-| Builder calls per job | `max_job_attempts` | 25 | 30 |
+| Builder calls per job | `max_job_attempts` | 30 | 40 |
 | Build stage time limit | `stage_timeout_seconds.build` | 180 s | **600 s per call** (a 40-turn call can take longer than 180 s) |
 | Whole-file limit / excerpt budget | `whole_file_limit` / `excerpt_budget` (currently constants) | 12 KB / 40 KB | **64 KB / 160 KB** (§13) |
 
@@ -183,7 +198,7 @@ Every rejected proposal must append a receipt to the run’s `rejected_edits.jso
 - If the owning task's retries are spent, record the failure as advisory and continue to full verification.
 
 **Full verification.**
-- Run after every task is done; repeat after routed fixes until it passes or the independent job-level `verify_retries` budget is exhausted (default 3 retries after the initial run).
+- Run after every task is done; repeat after routed fixes until it passes or the independent job-level `verify_retries` budget is exhausted (default 4 retries after the initial run).
 - Every planned file must exist (E14).
 - Safe Ruff fixes and formatting of changed Python files are already committed in the task checkpoint before verification. Gate changed Python files using repository Ruff config when present; otherwise use isolated correctness rules `E9` and `F` minus auto-fixable rules. No line-length gate without repository config.
 - Run `pytest` on plan targets using `pytest-gate.ini` with the worktree root on `pythonpath`; then configured linters. Exit 4 names the missing path.
@@ -251,6 +266,7 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 
 | Failure | What broke | Rule that prevents it |
 |---|---|---|
+| r1–r7 sweep | Progress spent retries; cutoffs became corrections; empty inserts and job stubs were blocked | Calibration section; §3–§6; replay_safeguard suite |
 | #8 | Whole-file write to an existing file was fatal | §3 `write` allowed for files in the plan; §4.5 |
 | #9 | Builder skipped a required new test; pytest ran on a missing path | §8 planned files must exist (E14); exit code 4 names the path |
 | #13 | Missing-file corrections used verify retries; multi-task plans ran out of budget early | §5 per-task budgets; §8 full verification only once every task is done |
@@ -346,3 +362,7 @@ Items 1–13 describe the baseline implementation changes already delivered on t
 **#27/#28 / replay_r6.** Replay the r6 plan without flag ownership: insert provision_flag before test tasks. Three transient RateLimitErrors then success reach DONE with unchanged task_retries. insufficient_quota pauses at AWAIT_HUMAN with resume_stage BUILD and checkpoints retained; answer continue resumes to DONE. Unit coverage includes safe code extraction, retry-after/reset headers and 401 authentication, PLAN/REVIEW pauses and exhausted transient retries.
 
 **#26 / replay_r5.** Reject and restore a replace truncating `app/store.py` to three lines, preserving other proposal files; charge a broken production import to its owning task with no verify retry; reopen a test task, truncate its correction and use split allowance; repair and reach DONE with a persisted draft PR. Replay the r5 plan’s wrong flag key and prove deterministic policy override. Unit coverage includes threshold/exemption/explicit rewrite, import mapping/environment, traceback routing, normalization/dependencies and split exhaustion.
+
+## §11 supplemental safeguard sweep replays
+
+`tests/test_safeguard_sweep_replays.py` replays r6 empty-anchor insert, r5 cutoff beyond split allowance, r1 shrinking failures, r7 stub replacement, whitespace uniqueness, flag equivalents and true-default refusal, safe formatting, >6 tests and unchanged safety/provider behavior. Original r1–r7 receipts remain the evidence; tests use deterministic Git-backed proposals and failure sequences.

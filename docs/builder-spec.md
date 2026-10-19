@@ -219,6 +219,7 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 - It runs only after verification passes.
 - If the change class requires a flag, the flag `<plan.flag_key>` must exist in project `launchdarkly.project_key` (currently `alexis-interior-design-demo-app`).
 - It's created if missing, as a boolean that is off in every environment, and production must read as off.
+- **ensure_flag / existing vs create (r8):** Only a key supplied by the issue itself (`job.feature.flag_key` from intake) means "must already exist"; a 404 then pauses with the existing-flag error. A policy-fixed key (`flags.issue_flag_keys` / `default_key`) or a planner key is created when missing (boolean, temporary, default off; honors `must_default_off`), same create path as today.
 - Infrastructure errors pause the job (await_human) with the error text scrubbed of secrets. The factory never turns a flag on or starts a rollout.
 
 **PR body** (draft only). Sections, in this order:
@@ -289,6 +290,7 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 | #27 / `job-gh-5873513712-r6` | Three RateLimitErrors spent task retries and FAILED after five checkpoints | §5 provider classification, header-aware backoff and current-stage pause preserving checkpoints |
 | #28 / `job-gh-5873513712-r6` | Required key existed without a production flag task; human plan send-back needed | §8 deterministic required flag task before tests, governance check and receipts |
 | #29 / `job-gh-5873513712-r7` | Guard rejected rewrites of a same-job stub; E9 asked Builder to change plan fields; stale task scope survived plan revisions | §4 base-content-only guard and actionable E9; §8 plan-file consistency; §11 replay_r7 |
+| r8 / `job-gh-5873513712-r8` | Policy-fixed key `decora-room-home-migration` treated as issue-supplied existing flag; GET 404 paused ensure_flag after verification | §8 ensure_flag: only intake `feature.flag_key` must pre-exist; fixed/planner keys are created when missing; §11 replay_r8 |
 
 ## 11. Acceptance criteria
 
@@ -319,6 +321,8 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 **#24 / replay_r3.** Replay `get_flag(KEY, ctx, default=False)` with a bound key constant through the real audit and verification to DONE with a persisted draft PR. Unit regressions cover true and mixed defaults, constant-bound keys, accepted-form/offending-line diagnostics, and flag-owner routing instead of a tests-only task.
 
 **#29 / replay_r7.** Task A creates a 35-line stub absent at base; task B replaces all of it and reaches DONE with a persisted draft PR. Base-file removal >50% still rejects atomically with checkpoint restore and actionable E9. Regressions exempt earlier job additions in existing files and prove stale plan files are removed from tasks/flag owners, empty tasks are removed with transitive dependency repointing, and normalization notes and idempotence are preserved.
+
+**r8 / replay_r8.** With a fake LaunchDarkly client: a policy-fixed key and GET 404 creates a boolean temporary default-off flag and the job proceeds past ensure_flag; an issue-supplied key and 404 still raises the existing-flag error; an existing flag (GET 200) is reused unchanged.
 
 **Live definition of done** (decor-agent, real model, `--ld live --push`):
 - A maintainer labels an issue with a high-risk migration plan (the #8/#12 room-home migration). The watcher starts the job without anyone typing a job ID.

@@ -106,7 +106,8 @@ def test_replay_r3(tmp_path, repair):
         calls.append(('add_launchdarkly_flag', proposal([
             write('app/flags.py', flags.replace('FLAG_DEFAULT = True\n', ''))]), check_owner))
     flags_policy = policy().flags.model_copy(update={'key_pattern': '^decora-[a-z0-9-]+$'})
-    factory, job, harness = run(tmp_path, plan, calls, flags=flags_policy)
+    factory, job, harness = run(tmp_path, plan, calls, flags=flags_policy,
+                               base_files={'app/flags.py': flags.replace('FLAG_DEFAULT = True\n', '')})
     assert_draft(job)
     assert job.verify_retries_used == int(repair)
     assert job.verification_task_routes == ({'add_launchdarkly_flag': 1} if repair else {})

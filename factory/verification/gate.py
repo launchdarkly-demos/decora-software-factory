@@ -5,8 +5,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from factory.governance.flags import audit_flag
-from factory.governance.policy import flag_required
+from factory.governance.flags import audit_flag, is_production_path
+from factory.governance.policy import flag_required, selected_flag_key
 from factory.models import CommandReport, FailureClass, JobState, VerifyResult
 from factory.task_queue import missing_file_feedback
 from factory.tools.layer import ToolLayer
@@ -33,7 +33,7 @@ class VerificationGate:
             return VerifyResult(passed=False, commands=[], classification="test",
                                 actionable="\n".join(missing_file_feedback(job, path) for path in missing))
         diff = tools.diff(job.worktree.base_sha)
-        flag_key = job.feature.flag_key or job.plan.flag_key
+        flag_key = selected_flag_key(job)
         changed = tools.changed_files(job.worktree.base_sha)
         problems: list[str] = prerequisites(tools.policy, job.plan, changed)
         flag_problems: list[str] = []
@@ -84,6 +84,26 @@ class VerificationGate:
             actionable="\n".join(lines)[:8000],
             classification=classification,
         )
+
+    def run_imports(self, job: JobState, tools: ToolLayer, paths: list[str]) -> list[tuple[str, CommandReport]]:
+        reports = []
+        for path in sorted(set(paths)):
+            if not path.endswith('.py') or not is_production_path(path) or not tools._resolve(path).is_file():
+                continue
+            module, root = import_name(tools.worktree, path)
+            if module:
+                code = ('import importlib,sys; sys.path.insert(0,sys.argv[1]); '
+                        'importlib.import_module(sys.argv[2])')
+                args = [str(root), module]
+            else:
+                code = ('import importlib.util,sys; '
+                        'sys.path.insert(0,sys.argv[1]); '
+                        's=importlib.util.spec_from_file_location("_factory_script",sys.argv[2]); '
+                        'm=importlib.util.module_from_spec(s); sys.modules[s.name]=m; s.loader.exec_module(m)')
+                args = [str(tools._resolve(path).parent), str(tools._resolve(path))]
+            report = tools._run([_target_python(self.target_repo), '-c', code, *args])
+            reports.append((path, report))
+        return reports
 
     def run_quick(self, job: JobState, tools: ToolLayer, targets: list[str]) -> VerifyResult:
         commands = self._pytest(job, tools, targets)
@@ -174,3 +194,17 @@ def _target_python(repo: Path) -> str:
 
 def _missing(name: str) -> CommandReport:
     return CommandReport(argv=[name], exit_code=127, output=f"{name} is not installed", passed=False)
+
+
+def import_name(root: Path, path: str) -> tuple[str | None, Path]:
+    """Package modules (including src layouts) use their real import identity."""
+    file = root / path
+    parts = [] if file.name == '__init__.py' else [file.stem]
+    parent = file.parent
+    while parent != root and (parent / '__init__.py').is_file():
+        parts.insert(0, parent.name)
+        parent = parent.parent
+    if file.parent == root or parent != file.parent or file.name == '__init__.py':
+        if parts and all(part.isidentifier() for part in parts):
+            return '.'.join(parts), parent
+    return None, file.parent

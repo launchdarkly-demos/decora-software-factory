@@ -68,6 +68,9 @@ flags:
   enabled: true
   key_pattern: '^decora-[a-z0-9-]+$'
   must_default_off: true
+  # Canonical owner/repo#number (full issue URLs and numeric strings also supported).
+  issue_flag_keys:
+    "arober39/decor-agent#8": decora-room-home-migration
 
 rollout_rules:
   user_facing_behavior: {flag: required, guarded_rollout: required, human_pause: false}

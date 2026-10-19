@@ -21,6 +21,8 @@ class FlagRules(BaseModel):
     enabled: bool = False
     key_pattern: str = r"^decora-[a-z0-9-]+$"
     must_default_off: bool = True
+    issue_flag_keys: dict[str, str] = Field(default_factory=dict)
+    default_key: str | None = None
 
 
 class RolloutRule(BaseModel):
@@ -173,9 +175,25 @@ def change_class(job: JobState, plan: ImplementationPlan) -> ChangeClass | None:
 
 def flag_keys(job: JobState, plan: ImplementationPlan | None = None) -> set[str]:
     plan = plan or job.plan
+    if job.fixed_flag_key:
+        return {job.fixed_flag_key}
     values = [job.feature.flag_key, plan.flag_key if plan else None]
     return {key for value in values if value for key in re.split(r"[\s,;]+", value.strip())
             if key and key != "replace-with-your-flag-key"}
+
+
+def fixed_flag_key(policy: Policy, job: JobState) -> str | None:
+    """Prefer an exact URL, canonical owner/repo#number, then a numeric issue key."""
+    url = job.feature.issue_url or ''
+    match = re.search(r'github\.com/([^/]+/[^/]+)/issues/(\d+)', url)
+    aliases = [url.rstrip('/')]
+    if match:
+        aliases.extend([f'{match[1]}#{match[2]}', match[2]])
+    aliases.append(job.feature.id)
+    for alias in aliases:
+        if alias in policy.flags.issue_flag_keys:
+            return policy.flags.issue_flag_keys[alias]
+    return policy.flags.default_key
 
 
 def selected_flag_key(job: JobState) -> str | None:
@@ -206,7 +224,11 @@ def guarded_rollout_required(policy: Policy, job: JobState) -> bool:
 
 
 def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Decision:
+    from factory.plan_normalization import normalize_test_tasks
     from factory.verification.profiles import prerequisites, task_problems
+
+    normalize_test_tasks(plan)
+    job.fixed_flag_key = None
 
     if policy.approvals.pause_on_ambiguous and not job.feature.acceptance and not job.human_answers:
         return Decision(
@@ -220,6 +242,9 @@ def review_plan(policy: Policy, plan: ImplementationPlan, job: JobState) -> Deci
                         + ", ".join(get_args(ChangeClass)) + ". Resolve conflicting class overrides.",
                         resume_stage="plan")
     plan.change_class = classification
+    if flag_required(policy, job, plan) and (fixed := fixed_flag_key(policy, job)):
+        job.fixed_flag_key = fixed
+        plan.flag_key = fixed
     keys = flag_keys(job, plan)
     if policy.flags.enabled:
         if len(keys) > 1:

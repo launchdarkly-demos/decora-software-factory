@@ -7,6 +7,7 @@ from pathlib import Path
 
 from factory.errors import FactoryError
 from factory.models import JobState, PlanTask
+from factory.plan_normalization import is_test_task
 from factory.tools.layer import ToolLayer
 
 
@@ -67,8 +68,7 @@ def reopen_task(job: JobState, feedback: str, tools: ToolLayer | None = None) ->
             for path in sorted(mentioned):
                 if _is_test(path) and _repo_file(tools, path):
                     modules.update(_imported_modules(tools, path))
-    owner = next((task for task in reversed(queue)
-                  if modules.intersection(job.task_original_files[task.id])), None)
+    owner = _production_owner(job, modules)
     if owner is None:
         owner = next((task for task in reversed(queue)
                       if mentioned.intersection(job.task_original_files[task.id])), queue[-1])
@@ -168,3 +168,29 @@ def verification_feedback(owner: PlanTask, output: str, tools: ToolLayer) -> str
             if tools._resolve(path).is_file():
                 sections.append(source_context(path, tools.read(path), 1, 1, 'Current owning-file region'))
     return 'Failing test ids: ' + (', '.join(ids) or 'see failure output') + '\n' + '\n'.join(sections)
+
+
+def reopen_import_task(job: JobState, path: str) -> PlanTask:
+    """Import checks charge the module's declared owner, else the reporting task."""
+    queue = tasks(job)
+    owner = _production_owner(job, {path})
+    owner = owner or current_task(job) or queue[-1]
+    job.current_task_id = owner.id
+    if owner.id in job.completed_task_ids:
+        job.completed_task_ids.remove(owner.id)
+    if path not in owner.files:
+        owner.files.append(path)
+    return owner
+
+
+def _production_owner(job: JobState, paths: set[str]) -> PlanTask | None:
+    candidates = [task for task in tasks(job) if paths.intersection(job.task_original_files[task.id])]
+    # Broad test tasks may list production files as context/repair scope. They
+    # must not steal ownership from the task that implemented the broken module.
+    production = [task for task in candidates if not is_test_task(task)]
+    candidates = production or candidates
+    if not candidates:
+        return None
+    return max(candidates, key=lambda task: (
+        max((job.task_file_calls.get(task.id, {}).get(path, 0) for path in paths), default=0),
+        tasks(job).index(task)))

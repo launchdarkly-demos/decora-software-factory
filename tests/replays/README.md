@@ -86,3 +86,14 @@ Run these with `.venv/bin/python -m pytest -q tests/test_issue23_replays.py`.
   The fixture isolates the observed anchor failure from target-app dependencies.
   Unit regressions cover payload characters, ambiguous/atomic edits, divergence
   context and complete redacted rejected-anchor receipts.
+
+- `replay_r5` (#26, `tests/test_issue26_replays.py`) rejects an entire 241-line
+  store being replaced by three lines, restores the checkpoint without partial
+  multi-file writes, charges a broken import to its production owner, and splits
+  a reopened test correction before reaching DONE with a local draft receipt.
+  `issue_26_r5_plan.json` is the final saved r5 plan, used to test bounded test-task
+  normalization, shared-file ownership and deterministic fixed-key override. That
+  receipt already has the corrected key; the override test injects the drift key
+  reported in #24. A separate regression models the actual opening-hunk deletion
+  (238 lines in a file longer than 535), which is below the approved 50% guard
+  threshold and is caught by the per-checkpoint import check.

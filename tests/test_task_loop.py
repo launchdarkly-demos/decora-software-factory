@@ -90,7 +90,7 @@ def test_cutoff_and_partial_output_keep_same_task_without_retry(tmp_path):
     assert seen == ['T0'] * 3
     assert len(job.checkpoint_shas['T0']) == 2
     assert job.task_retries == {}
-    assert job.task_split_attempts == {'T0': 2}
+    assert job.task_split_attempts == {'T0': 1}
 
 
 def test_split_cap_is_separate_from_task_budget_and_overall_call_cap(tmp_path):

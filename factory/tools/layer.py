@@ -27,6 +27,10 @@ class ToolLayer:
     def run(self, argv: list[str], *, output_limit: int = 20_000) -> CommandReport:
         argv = plain_command(argv)
         self.policy.check_command(argv)
+        return self._run(argv, output_limit=output_limit)
+
+    def _run(self, argv: list[str], *, output_limit: int = 20_000) -> CommandReport:
+        """Factory-owned commands only; agent commands always go through run()."""
         try:
             proc = subprocess.run(
                 argv,

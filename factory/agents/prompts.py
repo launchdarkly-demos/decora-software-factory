@@ -21,6 +21,11 @@ Rules:
   refer to earlier tasks, and context_files are actual observed repository paths.
   Use repository tools to resolve uncertain paths; do not guess stylesheet names.
   Preserve acceptance criteria, duplicate-name behavior, exclusions and required tests.
+- Declare rewrite_files only for deliberate rewrites of named existing files. Removing more
+  than 50% of an existing file (20+ lines) otherwise rejects the whole proposal.
+- Test tasks must cover one behavior area and at most six test functions. Split migration
+  and compatibility testing into multiple tasks, each creating or appending to a test file.
+- mandatory_flag_key.key must be used when policy requires a flag; never invent another key.
 - Address API/frontend integration, stale responses, persistence and compatibility where relevant.
 - Set requires_migration=true for stored-data/schema changes; provide a migration_plan covering
   old data, repeat execution, failure recovery, rollback limitations, and migration tests.
@@ -93,6 +98,8 @@ Rules:
   migration idempotently, with fixtures proving old data survives and failure is recoverable.
 - Preserve human spending approval and catalog accuracy. Never read/write .env or app/pim/.
 - Fix current verification and reviewer feedback, including failing tests, lint, and UI behavior.
+- Add at most six test functions per task/call, covering one behavior area. Use append for
+  subsequent batches; never rewrite a whole test file to add tests.
 - Add meaningful tests that exercise real code. Do not replace routes/apps with test doubles.
 - Quick tests run only when task_complete=true. On partial parts return commands=[].
 - Return commands=[] normally; the verifier runs policy-approved commands after the edits.

@@ -231,7 +231,7 @@ def test_replay_r1_six_tasks_migration_repair_reaches_draft(tmp_path):
     assert_draft(job)
     assert harness.seen == ids + [ids[5], ids[4]]
     assert job.task_retries == {ids[4]: 1} and job.verify_retries_used == 0
-    assert job.task_split_attempts == {ids[5]: 1}
+    assert job.task_split_attempts == {}
     assert job.builds[-1].anchor_fallbacks
     assert len(factory.status(job.id).completed_task_ids) == 6
     assert len(job.verify_runs) == 1

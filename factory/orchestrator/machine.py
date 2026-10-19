@@ -23,8 +23,16 @@ from factory.observability.summary import build_summary
 from factory.observability.trace import JsonLog, Tracer
 from factory.orchestrator.graph import COMPONENTS, assert_legal
 from factory.orchestrator.store import JobStore
+from factory.plan_normalization import is_test_task
 from factory.publish.pr import Publisher
-from factory.task_queue import current_task, missing_file_feedback, reopen_task, tasks, verification_feedback
+from factory.task_queue import (
+    current_task,
+    missing_file_feedback,
+    reopen_import_task,
+    reopen_task,
+    tasks,
+    verification_feedback,
+)
 from factory.tools.layer import ToolLayer
 from factory.verification.commands import pytest_targets
 from factory.verification.gate import VerificationGate
@@ -246,7 +254,11 @@ class Factory:
     def _govern_plan(self, job: JobState) -> Transition:
         if job.plan is None:
             return Transition(stage=Stage.FAILED, detail="no plan", error="no plan")
+        previous_key = job.plan.flag_key
         decision = review_plan(self.policy, job.plan, job)
+        if job.fixed_flag_key and previous_key != job.plan.flag_key:
+            self._emit(job, "governance", "Fixed flag key override",
+                       proposed_key=previous_key or "<none>", fixed_key=job.plan.flag_key or "<none>")
         self._write_model(job, "implementation_plan.json", job.plan)
         if decision.retry_plan:
             used = job.retries.get("plan_repair", 0)
@@ -326,15 +338,26 @@ class Factory:
             self.execution.checkpoint(job.worktree)
         # Save applied parts even if a quick check fails or the task needs more calls.
         self.store.save(job)
+        # Check every changed production module, even on partial and correction calls.
+        # Use the real gate independently of test doubles supplying full verification.
+        imports = VerificationGate(self.target_repo, self.home).run_imports(
+            job, tools, tools.changed_files(job.worktree.base_sha))
+        for path, report in imports:
+            if not report.passed:
+                owner = reopen_import_task(job, path)
+                self._emit(job, "verification", f"Import check failed: {path}; owner {owner.id}")
+                return self._task_correction(job, f"E9: Import check failed for {path}\n{report.output}")
         if result.correction:
             return self._task_correction(job, result.correction)
         if not result.task_complete:
-            return self._task_correction(job, "Continue the remaining work for this task only. "
-                                         "Use insert_after/insert_before with a unique old anchor, "
-                                         "or append/prepend with new "
-                                         "to add code to the current checkpoint. Never use replace with empty old. "
-                                         "Return another smaller part with task_complete=false if necessary.",
-                                         split=True)
+            job.govern_feedback = (
+                "Continue the remaining work for this task only. "
+                "Use insert_after/insert_before with a unique old anchor, "
+                "or append/prepend with new to add code to the current checkpoint. "
+                "Never use replace with empty old. "
+                "Return another smaller part with task_complete=false if necessary."
+            )
+            return Transition(stage=Stage.BUILD, detail=job.govern_feedback)
         missing = [path for path in task.files if path not in job.deleted_files and not tools._resolve(path).is_file()]
         if missing:
             return self._task_correction(job, "\n".join(missing_file_feedback(job, path) for path in missing))
@@ -382,6 +405,9 @@ class Factory:
         feedback = strip_ansi(feedback)
         job.govern_feedback = feedback
         if split:
+            if is_test_task(task):
+                feedback += f" Return at most {task.max_test_functions} test functions per call using append."
+                job.govern_feedback = feedback
             used_splits = job.task_split_attempts.get(task.id, 0)
             job.task_split_attempts[task.id] = used_splits + 1
             if used_splits < self.policy.split_attempts:

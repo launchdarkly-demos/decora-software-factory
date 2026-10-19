@@ -74,6 +74,8 @@ class PlanTask(BaseModel):
     id: str
     description: str
     files: list[str]
+    rewrite_files: list[str] = Field(default_factory=list)
+    max_test_functions: int = Field(default=6, ge=1, le=6)
     quick_test_targets: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     acceptance: list[str] = Field(default_factory=list)
@@ -223,6 +225,7 @@ class JobEvent(BaseModel):
 
 
 class JobState(BaseModel):
+    fixed_flag_key: str | None = None
     id: str
     stage: Stage
     feature: FeatureRequest

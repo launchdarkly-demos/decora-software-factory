@@ -112,7 +112,7 @@ Each error belongs to one of three classes:
 | E6 | Anchor matches more than once | Correction | File, number of matches, and line numbers of each. "Extend the anchor until it's unique." |
 | E7 | Empty anchor on `replace`/`insert_*` | Correction | "`replace` and `insert_*` need a non-empty unique anchor. To add code without one, use `append` or `prepend`." |
 | E8 | Conflicting edits (create of an existing path, edit after delete, move onto an existing path) | Correction | Both edits and why they conflict |
-| E9 | Syntax or parse error after staging | Correction | File:line:col, message, about 20 lines of staged context with a caret |
+| E9 | Syntax/parse error, destructive proposal (§4), or checkpoint import failure (§8) | Correction | File:line:col, message, about 20 lines of staged context with a caret |
 | E10 | Formatter failure | Correction | The formatter's message with ANSI codes stripped, plus the E9 context |
 | E11 | Invalid module or package name | Correction | Path and a suggested valid name |
 | E12 | Placeholder markers in content (`[excerpt…]`, `[omitted…]`) | Correction | "Content contains preview markers; read the exact source." |
@@ -156,7 +156,7 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 
 - After a proposal applies, the factory commits only that proposal's paths (`checkpoint <task>[/<part>]`). It records the commit hash under the task, the `task_complete` flag and the summary.
 - A task is **done** only when `task_complete=true` and the checkpoint is committed.
-- **Splits** add checkpoints under the same task.
+- **Partial continuations** add checkpoints under the same task and consume only `max_job_attempts`; reserve `split_attempts` for E1/E2 failures, including corrections of reopened tasks.
 - **JobState** keeps: `current_task_id`, `completed_task_ids`, `checkpoint_shas`, `task_retries`, `verify_retries_used`, `verification_task_routes`, `task_split_attempts`, `builder_calls`, `auto_added_files`, `deleted_files` and `task_summaries`.
 - **Resume after a crash, worker restart or Temporal replay:** reset the worktree to the latest checkpoint commit, rebuild the file context from disk, and continue from `current_task_id`. Uncommitted edits are thrown away.
 - A correction or split always starts from the latest checkpoint, never from a half-applied proposal, because apply is all-or-nothing.
@@ -188,7 +188,7 @@ Every rejected proposal must append a receipt to the run’s `rejected_edits.jso
 Flag-audit verification failures bypass module-under-test routing: select the plan task owning the flag module, or the production file containing the selected key. Never select a tests-only task for a flag-audit failure. Preserve original ownership and the normal reopening/dependent-task rules below.
 
 1. Collect failing test files and repo traceback frames. Prefer the deepest non-test repo frame (closest to the failure). Also resolve repo modules imported by the failing test file, including relative imports and imports of symbols/submodules. Ignore external modules and unrelated command lines.
-2. Select the **last** task in plan order owning a candidate module under test (deepest frame takes precedence over imports). If no module owner is found, fall back to the previous rule: last task owning a mentioned traceback/test path, else last task in the plan.
+2. For a candidate production module (deepest frame takes precedence over imports), prefer production tasks over broad test tasks that also list the file, then prefer the task that most recently edited it; break ties by the **last** owner in plan order. If no module owner is found, fall back to the previous rule: last task owning a mentioned traceback/test path, else last task in the plan.
 3. Add the identified repo modules to the fixing task's scope and supply their current text in its next context. Preserve original ownership when adding repair scope so later routing stays stable.
 4. Mark the owner not done. For a quick-test failure from another task, preserve the reporting task's completed checkpoint; the module owner does the repair. Re-check dependent tasks only when they touched the owner's files later.
 5. Run full verification once the queue is all done again. Quick-test corrections use the owning task's retries; full-verification corrections use only the job verification budget.
@@ -262,7 +262,7 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 | Ops | Live runs blocked by manual job IDs, port and address mix-ups, project key changes | §9 rerun via label; §11 live definition of done |
 | #25 / `job-gh-5873513712-r4` | Escaped non-ASCII payloads garbled `Room→Home` into `Room\x192Home`; multi-line feedback hid divergence and full rejected anchors were lost | §2 verbatim payloads; §3 unique escape-artifact fallback and ASCII code anchors; §5 divergence feedback; §7 redacted rejected-edit receipts |
 
-| #26 / `job-gh-5873513712-r5` | `app/store.py` shrank from 241 lines to 3; collection errors went to tests; reopened test cutoff spent retries; flag key drift | §4 destructive guard and checkpoint restore; §8 per-checkpoint imports and innermost production owner; §2 bounded test normalization; E1 split preservation; §8 fixed policy key |
+| #26 / `job-gh-5873513712-r5` | `app/store.py` lost its first 238 lines (the `-1,241 +1,3` hunk); collection errors went to tests; reopened test cutoff spent retries; flag key drift | §4 destructive guard and checkpoint restore; §8 per-checkpoint imports and innermost production owner; §2 bounded test normalization; E1 split preservation; §8 fixed policy key |
 
 ## 11. Acceptance criteria
 

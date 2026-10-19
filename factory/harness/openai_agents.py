@@ -12,7 +12,7 @@ from factory.agents.apply import apply_proposal
 from factory.agents.prompts import BUILDER_INSTRUCTIONS, PLANNER_INSTRUCTIONS, REVIEWER_INSTRUCTIONS
 from factory.context.repo import RepositoryReader
 from factory.errors import FactoryError, GovernanceError, IncompleteBuildError, InfrastructureError
-from factory.governance.policy import Policy, flag_required, selected_flag_key
+from factory.governance.policy import Policy, fixed_flag_key, flag_required, selected_flag_key
 from factory.harness.repository_tools import repository_tools
 from factory.harness.tokens import charge_provider
 from factory.models import BuildProposal, ImplementationPlan, JobState, RepoContext, ReviewReport
@@ -47,6 +47,8 @@ class OpenAIAgentsHarness:
                 "feature": _feature_for_model(job),
                 "context": context.model_dump(),
                 "answers": job.human_answers,
+                "mandatory_flag_key": {"key": fixed_flag_key(self.policy, job),
+                                       "mandatory_when_flag_required": True},
                 "flag_policy": self.policy.flags.model_dump(),
                 "rollout_rules": {key: rule.model_dump() for key, rule in self.policy.rollout_rules.items()},
                 "guarded_rollout": self.policy.guarded_rollout.model_dump(),
@@ -258,6 +260,8 @@ def _validation_feedback(exc: ValueError) -> str:
 
 
 def _builder_failure(exc: BaseException, tokens: int = 16000, turns: int = 40) -> FactoryError:
+    if isinstance(exc, (IncompleteBuildError, InfrastructureError)):
+        return exc
     text = str(exc).lower()
     if exc.__class__.__name__ == "MaxTurnsExceeded":
         return IncompleteBuildError(f"You ran out of turns ({turns}). The current file text is included; "

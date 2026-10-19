@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from pathlib import Path
 
 from factory.agents.staging import prepare_staged
-from factory.errors import FactoryError, GovernanceError, SafetyError
+from factory.errors import DestructiveEditError, FactoryError, GovernanceError, SafetyError
+from factory.gitcmd import git
 from factory.models import BuildProposal, BuildResult, JobState
 from factory.task_queue import current_task
 from factory.tools.anchors import anchor_span
@@ -15,9 +17,14 @@ from factory.verification.commands import pytest_targets
 
 
 def apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) -> BuildResult:
+    checkpoint = tools.head_sha()
     try:
         return _apply_proposal(job, tools, proposal)
-    except (FactoryError, OSError, ValueError):
+    except (FactoryError, OSError, ValueError) as exc:
+        if isinstance(exc, DestructiveEditError):
+            restored = git(tools.worktree, "restore", "--source=" + checkpoint, "--staged", "--worktree", "--", ".")
+            if restored.returncode:
+                raise FactoryError("Could not restore rejected proposal checkpoint") from exc
         if tools.receipt_dir is not None:
             tools.receipt_dir.mkdir(parents=True, exist_ok=True)
             record = {"job_id": job.id, "task_id": job.current_task_id, "builder_call": job.builder_calls,
@@ -106,7 +113,9 @@ def _apply_proposal(job: JobState, tools: ToolLayer, proposal: BuildProposal) ->
     for rel, content in staged.items():
         if content is not None:
             _check_content_at(content, rel)
+    check_destructive_edits(tools, staged, task.rewrite_files if task else [])
     prepare_staged(tools, staged)
+    check_destructive_edits(tools, staged, task.rewrite_files if task else [])
     for rel, content in staged.items():
         if content is not None:
             _check_content_at(content, rel)
@@ -200,3 +209,24 @@ def _check_content_at(content: str, path: str) -> None:
         check_content(content)
     except GovernanceError:
         raise SafetyError(f"Safety violation: credential-like content in `{path}`.") from None
+
+
+def check_destructive_edits(tools: ToolLayer, staged: dict[str, str | None], rewrite_files: list[str]) -> None:
+    """Compare checkpoint source to the final proposal, never individual anchors."""
+    for path, after in staged.items():
+        if path in rewrite_files or not tools._resolve(path).is_file():
+            continue
+        before = tools.read(path).splitlines()
+        if len(before) < 20:
+            continue
+        removed = [(start, end) for kind, start, end, _, _ in
+                   difflib.SequenceMatcher(None, before, (after or '').splitlines(), autojunk=False).get_opcodes()
+                   if kind in {'delete', 'replace'}]
+        count = sum(end - start for start, end in removed)
+        if count > len(before) * 0.5:
+            start, end = removed[0]
+            head = '\n'.join(f'{index + 1:>5} | {before[index]}' for index in range(start, min(end, start + 20)))
+            raise DestructiveEditError(
+                f'E9: {path}:{start + 1}:1: destructive edit removes {count}/{len(before)} lines '
+                f'({count / len(before):.0%}); more than 50% requires this task to declare '
+                f'rewrite_files=["{path}"] for a deliberate rewrite. Head of removed region:\n{head}')

@@ -169,8 +169,12 @@ Live acceptance (§11) is outside this mock-only session and has not been claime
 
 | Spec rule | Implementation and regression work | Status |
 | --- | --- | --- |
-| §4 destructive removal >50%, ≥20 lines, rewrite_files opt-in; atomic checkpoint restore and lost-source feedback | `apply.py`, `models.py`; `test_issue26_replays.py` | Required by #26 |
-| §8 per-checkpoint production imports, target interpreter/environment, owner task correction; innermost production traceback routing | `gate.py`, `machine.py`, `task_queue.py`; replay_r5 and import units | Required by #26 |
-| §8 fixed issue/default flag key mandatory payload and logged deterministic override | `policy.py`, `openai_agents.py`, `policy.decora.yaml`; r5 wrong-key replay | Required by #26 |
-| §2 six-test/one-area task normalization; E1 on reopened tasks preserves splits, append guidance | planner prompt/normalizer, harness exception handling; replay_r5 and units | Required by #26 |
-| §10/§11 replay_r5 rejects truncation, repairs owner imports, splits reopened tests and reaches DONE | `tests/test_issue26_replays.py` | Required by #26 |
+| §4 destructive removal >50%, ≥20 lines, rewrite_files opt-in; atomic checkpoint restore and lost-source feedback | `apply.py`, `models.py`; `test_issue26_replays.py` | Covered |
+| §8 per-checkpoint production imports, target interpreter/environment, owner task correction; innermost production traceback routing | `gate.py`, `machine.py`, `task_queue.py`; replay_r5 and import units | Covered |
+| §8 fixed issue/default flag key mandatory payload and logged deterministic override | `policy.py`, `openai_agents.py`, `policy.decora.yaml`; r5 wrong-key replay | Covered |
+| §2 six-test/one-area task normalization; E1 on reopened tasks preserves splits, append guidance | planner prompt/normalizer, harness exception handling; replay_r5 and units | Covered |
+| §10/§11 replay_r5 rejects truncation, repairs owner imports, splits reopened tests and reaches DONE | `tests/test_issue26_replays.py` | Covered |
+
+R5 receipt audit: the saved `summary.json` records six split attempts, with three task corrections already spent before the terminal cutoff. Successful partial continuations consumed the E1/E2 allowance. They now consume only the job call cap, leaving split allowance available on reopened tasks. The final saved plan already uses the corrected flag key; the override regression loads that plan and injects the drift candidate `decora-room-home-association` documented in #24.
+
+The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file line count; later hunks reach original line 535. Its 243 removed lines alone need not exceed the approved 50% whole-file threshold. Per-checkpoint imports catch that exact failure independently; the destructive-guard replay separately proves an entire 241-line file cannot be truncated to three lines.

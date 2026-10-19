@@ -102,7 +102,7 @@ def test_replay_03_issue_14_nested_tests_and_automatic_package(tmp_path):
 def test_replay_04_issue_16_five_tasks_cutoff_without_retries(tmp_path):
     job, harness = run_replay(tmp_path, 16)
     assert harness.calls == ['T1', 'T2', 'T3', 'T3', 'T3', 'T4', 'T5']
-    assert job.task_split_attempts == {'T3': 2}
+    assert job.task_split_attempts == {'T3': 1}
     assert job.task_retries == {}
     assert len(job.checkpoint_shas['T3']) == 2
 
@@ -258,7 +258,7 @@ def test_replay_05_issue_19_insert_append_and_max_turns(
     assert job.pr is not None and job.pr.dry_run
     assert Path(job.pr.body_path).exists()
     assert job.task_retries == {}
-    assert job.task_split_attempts == {'model_update': 2}
+    assert job.task_split_attempts == {'model_update': 1}
     assert job.builder_calls == 3
     assert len(job.checkpoint_shas['model_update']) == 2
     assert job.verify_runs[-1].passed

@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s #22, #23, #24, #25 and #26 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s #22, #23, #24, #25  #26, #27 and #28 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -121,11 +121,13 @@ Each error belongs to one of three classes:
 | E15 | Full verification failure | Correction to the module-under-test owner (§8), charged only to `verify_retries` | The failing test ids, relevant traceback, and current text of the routed modules; never consume `per_task_retries` |
 | E16 | Protected path, `..`, symlink escape, path outside the root | **Fatal** | "Safety violation: `<rule>` on `<path>`." |
 | E17 | Secret in content | **Fatal** | "Safety violation: credential-like content in `<path>`." The value is never echoed |
-| E18 | Model or network error (5xx, timeout, connection) | Infrastructure: retried up to 3 times with backoff, not charged to the task | n/a; logged |
+| E18 | Model/network error (5xx, timeout, connection), HTTP 429 / RateLimitError with transient codes such as rate_limit_exceeded | Infrastructure: up to 3 retries; honor retry-after / x-ratelimit-reset-* with exponential backoff plus jitter capped at 60s; injectable sleep. Never charge task retries or splits. Exhaustion pauses at the current stage | Safe provider code logged |
 | E19 | Task retries exhausted | **Fatal** for the job | "Task T exhausted N retries; last error: …" |
 | E20 | Job attempt cap reached | **Fatal** | "Job reached max_job_attempts (N)." |
 | E21 | Splits exhausted for a task | After `split_attempts`, each further E1/E2 counts as a correction (E19 applies) | Same text as E1/E2 |
 | E22 | Full-verification retry budget exhausted | **Fatal** | "E22: Job exhausted verify_retries (N); last verification failure: …" |
+
+**Provider blocks (#27).** Inspect exc.code, exc.body and response JSON for the error code without logging secrets. HTTP 429 insufficient_quota, credit_balance_exhausted or billing codes, and 401/403 authentication errors, immediately raise ProviderBlockedError and pause at AWAIT_HUMAN, never FAILED. Preserve checkpoints and resume_stage = the current BUILD/PLAN/REVIEW stage. Question: `Provider billing/credentials problem: <code>. Fix the OpenAI account, then answer continue (or add factory:retry).` The GitHub watcher status comment includes the provider error code. Planner and Reviewer use the same classification and infrastructure retry/pause rules.
 
 Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies to ordinary Builder corrections; a full-verification failure itself cannot cause E19.
 
@@ -166,6 +168,8 @@ Every rejected proposal must append a receipt to the run’s `rejected_edits.jso
 ## 8. Verification, routing failures back, the flag gate and the PR
 
 **Per-checkpoint imports.** After every task checkpoint, including partial parts and applied corrections, import every changed production Python module with the target interpreter, cwd=worktree and the verification environment. Use `python -c` with `importlib.import_module` per module; exclude tests and map standalone scripts by path with importlib file loading. An import failure reopens the task whose files include that module (otherwise current task), retains the checkpoint and traceback, and consumes a task correction, never `verify_retries`. Collection/import tracebacks route to the innermost production frame’s owner before test-file ownership.
+
+**Required flag task (#28).** When flag_required(policy, job, plan), normalization ensures exactly one production task owns the flag. Use an existing production flags.py/flag.py from the repository, otherwise policy flags.module (default app/flags.py). Acceptance requires defining `<KEY_CONST> = '<flag_key>'` and `FLAG_DEFAULT = False` there, and gating new behavior with `get_flag(<KEY_CONST>, context, default=FLAG_DEFAULT)`. If absent, insert `provision_flag_<sanitized key>` after production tasks and before test tasks, with the flag module and gated production files. Log the insertion and include it in the plan receipt and PR body. Governance verifies ownership before BUILD; no human send-back for this repair.
 
 **Fixed flag keys.** `flags.issue_flag_keys` maps canonical `owner/repo#number`, numeric issue strings, or full GitHub issue URLs to keys; `default_key` is an optional fallback. Example: `{"arober39/decor-agent#8": "decora-room-home-migration"}`. The planner payload declares the fixed key mandatory when the job requires a flag. Governance sets/overrides `plan.flag_key` deterministically and logs old/new values; a different planner key is replaced without a repair round.
 
@@ -264,6 +268,9 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 
 | #26 / `job-gh-5873513712-r5` | `app/store.py` lost its first 238 lines (the `-1,241 +1,3` hunk); collection errors went to tests; reopened test cutoff spent retries; flag key drift | §4 destructive guard and checkpoint restore; §8 per-checkpoint imports and innermost production owner; §2 bounded test normalization; E1 split preservation; §8 fixed policy key |
 
+| #27 / `job-gh-5873513712-r6` | Three RateLimitErrors spent task retries and FAILED after five checkpoints | §5 provider classification, header-aware backoff and current-stage pause preserving checkpoints |
+| #28 / `job-gh-5873513712-r6` | Required key existed without a production flag task; human plan send-back needed | §8 deterministic required flag task before tests, governance check and receipts |
+
 ## 11. Acceptance criteria
 
 **Replay suite** (mock harness, in CI, each must reach `DONE` with a draft PR record):
@@ -330,5 +337,7 @@ Items 1–13 describe the baseline implementation changes already delivered on t
 - **Above 64 KB:** outline plus ranked sections, as today. Because of §3, a section only helps the Builder; it's never a requirement for an edit to be accepted.
 - **Don't** raise output limits to fit whole-file rewrites. Use insert/replace/append for existing files, so output stays small even when the input is large.
 - **Revisit** if the factory moves to a model with a smaller context window. The limits are policy settings, so that's a configuration change, not a code change.
+
+**#27/#28 / replay_r6.** Replay the r6 plan without flag ownership: insert provision_flag before test tasks. Three transient RateLimitErrors then success reach DONE with unchanged task_retries. insufficient_quota pauses at AWAIT_HUMAN with resume_stage BUILD and checkpoints retained; answer continue resumes to DONE. Unit coverage includes safe code extraction, retry-after/reset headers and 401 authentication, PLAN/REVIEW pauses and exhausted transient retries.
 
 **#26 / replay_r5.** Reject and restore a replace truncating `app/store.py` to three lines, preserving other proposal files; charge a broken production import to its owning task with no verify retry; reopen a test task, truncate its correction and use split allowance; repair and reach DONE with a persisted draft PR. Replay the r5 plan’s wrong flag key and prove deterministic policy override. Unit coverage includes threshold/exemption/explicit rewrite, import mapping/environment, traceback routing, normalization/dependencies and split exhaustion.

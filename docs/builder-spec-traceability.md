@@ -178,3 +178,12 @@ Live acceptance (§11) is outside this mock-only session and has not been claime
 R5 receipt audit: the saved `summary.json` records six split attempts, with three task corrections already spent before the terminal cutoff. Successful partial continuations consumed the E1/E2 allowance. They now consume only the job call cap, leaving split allowance available on reopened tasks. The final saved plan already uses the corrected flag key; the override regression loads that plan and injects the drift candidate `decora-room-home-association` documented in #24.
 
 The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file line count; later hunks reach original line 535. Its 243 removed lines alone need not exceed the approved 50% whole-file threshold. Per-checkpoint imports catch that exact failure independently; the destructive-guard replay separately proves an entire 241-line file cannot be truncated to three lines.
+
+## #27 / #28 r6 rules (spec-first)
+
+| Rule | Implementation | Evidence |
+|---|---|---|
+| #27 transient 429 classification, safe code extraction and header-aware capped backoff | `factory/harness/openai_agents.py`, `factory/errors.py`, `factory/orchestrator/machine.py` | `tests/test_issue27_28_replays.py`: classification and replay_r6 |
+| #27 billing/auth and exhausted infrastructure pause at current stage; checkpoints survive continue | same; watcher renders pause question with provider code | replay_r6 plus PLAN/REVIEW and status coverage |
+| #28 exactly one required production flag owner, inserted before tests without send-back | `factory/plan_normalization.py`, `factory/governance/policy.py` | replay_r6 normalization, idempotence and ownership tests |
+| #28 insertion logged, saved in plan receipt and PR body | orchestrator plan logging, ImplementationPlan, PR renderer | replay receipt and PR assertions |

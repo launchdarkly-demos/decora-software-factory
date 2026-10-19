@@ -31,6 +31,10 @@ Live acceptance (§11) is outside this mock-only session and has not been claime
 | §2.4 Last correction included; exact E1–E22 requirements below | [openai_agents.py:build](../factory/harness/openai_agents.py#L73) | [test_replays.py:test_replay_07_issue_20b_syntax_e9_context_then_fixed](../tests/test_replays.py#L313); [test_replays.py:test_replay_05_issue_19_insert_append_and_max_turns](../tests/test_replays.py#L178) | Covered |
 | §2.5 Flag key/default off/required supplied | [openai_agents.py:build](../factory/harness/openai_agents.py#L73) | [test_openai_harness.py:test_builder_payload_prioritizes_current_task_and_output_cap_is_policy](../tests/test_openai_harness.py#L201) | Covered |
 | §2.6 Output-token and turn limits supplied | [openai_agents.py:build](../factory/harness/openai_agents.py#L73) | [test_openai_harness.py:test_builder_payload_prioritizes_current_task_and_output_cap_is_policy](../tests/test_openai_harness.py#L201) | Covered |
+| §2.7 / B1 Builder `request_context` (feature title/summary/acceptance/hints; plan summary/steps/assumptions; ≤6000 chars; longest-first `[truncated]`; never drop steps) | [openai_agents.py:builder_payload](../factory/harness/openai_agents.py); [openai_agents.py:request_context_for_builder](../factory/harness/openai_agents.py); [prompts.py:BUILDER_INSTRUCTIONS](../factory/agents/prompts.py) | [test_issue35_builder_context.py](../tests/test_issue35_builder_context.py) | Covered |
+| B2 Planner copies concrete items from request/hints/steps verbatim into owning-task acceptance | [prompts.py:PLANNER_INSTRUCTIONS](../factory/agents/prompts.py) | [test_issue35_builder_context.py](../tests/test_issue35_builder_context.py) | Covered |
+| B3 Reviewer checks concrete items in `plan.steps` and `feature.hints` within scope; missing ⇒ request changes citing item | [prompts.py:REVIEWER_INSTRUCTIONS](../factory/agents/prompts.py) | [test_issue35_builder_context.py](../tests/test_issue35_builder_context.py) | Covered |
+| B4 No change to flags/rollout, LD, or org/personal policy behavior | unchanged flag/policy paths | existing personal-target and org-target suites | Covered |
 | §2 final paragraph Context is convenience; unobserved anchors accepted; read outside task | [openai_agents.py:build](../factory/harness/openai_agents.py#L73); [repository_tools.py:repository_tools](../factory/harness/repository_tools.py#L10); [apply.py:apply_proposal](../factory/agents/apply.py#L12) | [test_openai_harness.py:test_builder_accepts_unobserved_source_and_tool_reads](../tests/test_openai_harness.py#L125); [test_replays.py:test_replay_06_issue_20a_40kb_unseen_anchor_applies_first_time](../tests/test_replays.py#L271); [test_general_planning.py:test_repository_tools_read_outside_edit_scope_without_exposing_secrets](../tests/test_general_planning.py#L243) | Covered |
 | §3 Read actions have no side effects; writes only through proposal | [repository_tools.py:repository_tools](../factory/harness/repository_tools.py#L10); [apply.py:apply_proposal](../factory/agents/apply.py#L12) | [test_general_planning.py:test_sdk_planner_has_read_only_repository_tools](../tests/test_general_planning.py#L99) | Covered |
 | §3 read_file: any §4.2-safe path; ≤200 lines; verbatim/newlines | [repo.py:resolve](../factory/context/repo.py#L42); [repo.py:source](../factory/context/repo.py#L58); [repo.py:read](../factory/context/repo.py#L67); [repository_tools.py:repository_tools](../factory/harness/repository_tools.py#L10) | [test_builder_contract.py:test_anchor_matching_preserves_real_newline_bytes](../tests/test_builder_contract.py#L273); [test_general_planning.py:test_repository_tools_read_outside_edit_scope_without_exposing_secrets](../tests/test_general_planning.py#L243) | GAP G4: extra read exclusions, inventory limits and response truncation |
@@ -210,6 +214,36 @@ The r5 `store.py` diff’s `-1,241 +1,3` is the opening hunk, not a whole-file l
 | --- | --- | --- |
 | §8 only intake `feature.flag_key` means existing-flag-required; policy-fixed/`default_key`/planner keys are created on 404 | `factory/governance/policy.py:issue_supplied_flag_key`; `factory/launchdarkly/flags.py:_sync` | Covered |
 | §10/§11 replay_r8: fixed key 404→POST create default off; issue key 404 still errors; GET 200 reuse unchanged | `tests/test_launchdarkly.py:test_replay_r8_*` | Covered |
+
+## Multiple targets and externally managed flags (spec-first)
+
+| Rule | Implementation and regression work | Status |
+| --- | --- | --- |
+| `flags.management` factory\|external; external ⇒ flag_required false, strip flag fields, no audit, ensure_flag mode external, no LD client | `policy.py`, `plan_normalization.py`, `reviewer.py`, `gate.py`, `launchdarkly/flags.py`, `publish/pr.py`, `openai_agents.py` | Covered |
+| `external` + issue_flag_keys/default_key is a load error; enabled:false vs external documented | `policy.py:load_policy`; `docs/running-a-second-target.md` | Covered |
+| `issue_triggers` + watch-issues `--policy`; author/labeler/bot allowlists; without `--policy` unchanged | `github/issues.py`; `temporal/cli.py` | Covered |
+| Separate org policy/runtime; worker refuses mismatched issue_triggers.slug | `policy.decora-org.yaml`; worker start check | Covered |
+| §10/§11 org replay: external strips flag task; same plan under policy.decora.yaml still inserts/audits; triggers + job-id uniqueness | `tests/test_org_target.py` | Covered |
+
+## #34 / issue intake (spec-first)
+
+| Rule | Implementation and regression work | Status |
+| --- | --- | --- |
+| §9 R1 unrecognized/`##` sections and unused preamble preserved in order as hints; planner+reviewer payloads and prompts see them | `factory/intake/load.py:parse_issue_body`; `factory/harness/openai_agents.py:_feature_for_model`; `factory/agents/prompts.py` | Covered |
+| §9 R2 standalone `---`/`***`/`___` ends a section; following text is `Footer:` hint; fenced HR ignored | `factory/intake/load.py` | Covered |
+| §9 R3 `change_class` from first ChangeClass token; `change_type` keeps human text without footer | `factory/intake/load.py` | Covered |
+| §9 R4 flag-key and rollout parsing unchanged aside from R2 truncation | `factory/intake/load.py` | Covered |
+| §10/§11 org issue#3 body replay | `tests/test_issue34_intake.py`; `tests/fixtures/org_issue3_r1_body.md` | Covered |
+
+## #35 / Builder request context (spec-first)
+
+| Rule | Implementation and regression work | Status |
+| --- | --- | --- |
+| §2.7 / B1 bounded `request_context` on Builder payload; BUILDER_INSTRUCTIONS use it for current-task concrete items without expanding files | `factory/harness/openai_agents.py:builder_payload` / `request_context_for_builder`; `factory/agents/prompts.py` | Covered |
+| B2 PLANNER_INSTRUCTIONS copy concrete named items into owning-task acceptance verbatim | `factory/agents/prompts.py` | Covered |
+| B3 REVIEWER_INSTRUCTIONS check `plan.steps`/`feature.hints` concrete items in scope; cite missing | `factory/agents/prompts.py` | Covered |
+| B4 flags/rollout/LD/org-personal policy unchanged | no flag/policy edits | Covered |
+| §10/§11 org issue#3 run-2 fixture replay + cap + prompt phrases | `tests/test_issue35_builder_context.py`; `tests/fixtures/org_issue3_r2_job.json` | Covered |
 
 ## Safeguard calibration (r1-r7 sweep)
 

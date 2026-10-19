@@ -32,8 +32,17 @@ class FakeGitHub(GitHubIssues):
         self.removed.append((number, label))
         self.retry_items = []
 
-    def approved(self, issue, label):
+    def approved(self, issue, label, *, triggers=None):
         return self.allow
+
+    def open_issues(self):
+        return list(self.items)
+
+    def label_actor(self, issue, label):
+        return 'alice' if self.allow else None
+
+    def has_write_permission(self, actor):
+        return True
 
     def comment(self, number, job_id, body):
         if self.fail_comment:

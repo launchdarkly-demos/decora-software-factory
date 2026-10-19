@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s #22, #23, #24, #25, #26, #27, #28 and #29 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s #22, #23, #24, #25, #26, #27, #28, #29, #34 and #35 rules (Oct 19, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18), `job-gh-5913682653` (Oct 18) and org `job-gh-5918876477` (Oct 19).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -39,10 +39,18 @@ Every Builder call, whether first, a split continuation or a correction, must re
 4. **The last correction**, if any, exactly as defined in §5.
 5. **Flag context**: the key, its default (off), and whether a flag is required.
 6. **Limits for this call**: how many output tokens and turns it has left, so the Builder can size its answer.
+7. **Request context** (`request_context`, #35 / B1): a bounded object with feature title, summary, acceptance and hints, plus plan summary, steps and assumptions. Cap total serialized size deterministically (default 6000 characters). When over the cap, truncate the longest fields first and append a visible `[truncated]` marker; never drop `plan.steps` entirely. BUILDER_INSTRUCTIONS must treat `request_context` as reference detail for the current task: concrete items it names that fall within the task's files and acceptance must be implemented, without expanding scope beyond the task's files.
 
 Every model payload (Planner, Builder, Reviewer and structured read-tool results) must use `json.dumps(..., ensure_ascii=False)` so source characters remain verbatim.
 
 The context is **for convenience, not a gate**. The Builder can read anything else it needs with the read tools (§3), and nothing it proposes is rejected for lack of having "seen" it.
+
+### Builder / Planner / Reviewer contract (#35)
+
+1. **B1 — Builder `request_context`.** Every Builder payload includes the bounded `request_context` object from §2.7. Instructions: use it as reference detail for the CURRENT task; implement concrete items it names that fall within the task's files and acceptance; never expand scope beyond the task's files.
+2. **B2 — Planner concrete items.** When the request (including `feature.hints`) or the plan steps name concrete items (files, test suites, keys, values, endpoints, commands), PLANNER_INSTRUCTIONS must copy them verbatim into the acceptance of the task that owns them. Do not summarize them as "all X".
+3. **B3 — Reviewer concrete items.** In addition to acceptance criteria, REVIEWER_INSTRUCTIONS must check every concrete item named in `plan.steps` and `feature.hints` that falls within the change's scope. A missing item in the diff is a failed check; the verdict must request changes and cite the missing item.
+4. **B4 — Policy unchanged.** No change to flags/rollout behavior, LaunchDarkly handling, or org/personal policy behavior.
 
 ## 3. Action set
 
@@ -248,6 +256,13 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 3. Job ID: `job-gh-<issue.id>`.
 4. Temporal rejects duplicate IDs, and the ledger (`issues.json`) remembers every job it has accepted.
 
+**Issue body parsing** (`parse_issue_body`). Recognized headings map as today: Goal/Summary → summary; Acceptance criteria/Acceptance → acceptance bullets; Rollout, Flag, Flag key → rollout/flag fields; Hints → hint bullets; Context → a context hint; Change type → change_type/change_class; Scope and constraints → scope; Verification → verification; User facing → user_facing. HTML comments are stripped before parsing. In addition:
+
+1. **R1 — no silent loss.** Every non-empty section whose heading is not a recognized field is preserved, in body order, as a context hint for the planner and reviewer, formatted `<Original Heading>: <text>`. Text before the first heading that is not used as the summary is preserved as a hint as well. Recognized fields keep their current mapping. The frozen `FeatureRequest.hints` (including these) must appear in both planner and reviewer model payloads; prompts must tell those agents to honor issue hints/context, not only the named fields.
+2. **R2 — horizontal-rule footers.** A line consisting only of `---` (or `***` / `___`) ends the current structured section. Text after it, up to the next `## ` heading, becomes a `Footer: …` context hint. It must never be appended to change_type, rollout, verification, scope, or any other recognized field. A `---` / `***` / `___` line inside a fenced code block is not a section break.
+3. **R3 — change_class token.** `## Change type` resolves `change_class` from the first token that matches a `ChangeClass` value (case-insensitive; separators such as comma, space, or period), e.g. `docs_only, low risk.` → `docs_only`. `change_type` keeps the human text (without any footer from R2).
+4. **R4 — flags and rollout.** `issue_flag_keys` / flag-key parsing behavior is unchanged. Rollout parsing is unchanged except that R2 may truncate the rollout section before a footer.
+
 **Status.**
 - There's one comment per job, marked `<!-- software-factory:<job> -->` and edited in place.
 - Every command it prints must include the watcher's real `--address`, and `--namespace` when it isn't the default (#18).
@@ -262,6 +277,16 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 - The ledger must never be edited by hand.
 
 **Outages.** If GitHub or the watcher goes down, jobs keep running in Temporal. A failed sync is retried on the next poll. An empty `FactoryError` log line isn't acceptable; logs must say which job failed and why.
+
+**Issue triggers (policy-driven, multi-target).** With `factory temporal watch-issues --policy <file>`, intake uses policy `issue_triggers`: `ready_label` / `retry_label` (defaults `factory:ready` / `factory:retry`), `authors` (OPEN issues from allowlisted logins start a job with no label), `labelers` (when non-empty, the ready/retry label actor must be on the allowlist **and** have write/maintain/admin), `agent_accounts` (extra logins treated as both authors and labelers; compare case-insensitively, including the `[bot]` suffix form), and optional `slug` (worker refuses to start when it disagrees with the checkout origin). Without `--policy`, the watcher keeps today's label + collaborator-write behavior. Non-allowlisted issues are ignored once (log, no comment). Comments are never instructions. Author triggering is ledger-idempotent (one job per issue; retries only via retry label by an allowlisted labeler). Job IDs stay `job-gh-<issue.id>` / `-r<n>` (globally unique across targets).
+
+## Multiple targets and externally managed flags
+
+The factory may serve more than one checkout at once. Behavior is **policy-driven**; never hard-code a repository name.
+
+**`flags.management`.** Values: `factory` (default; current behavior — factory plans, inserts, audits, and provisions flags) or `external` (required `flags.external_reason` text). When `external`: `flag_required()` is false for every change class; the planner payload states that flags and guarded rollouts are managed externally (include the reason) and must not be introduced; `normalize_flag_task` does not insert an owner and strips planner `flag_key` / guarded-rollout fields (logged in `normalization_notes`); `audit_flag` is not run in reviewer, verification gate, or `govern_ship`; `ensure_flag` skips with `FlagAssurance.mode == "external"` and a detail naming the reason, and the LaunchDarkly client is never constructed or called (even with `--ld live`); the PR body states that flags and guarded releases are managed by LaunchDarkly Release Autopilot (`flags.management=external`) using the reason. Validation: `external` plus non-empty `issue_flag_keys` or `default_key` is a policy load error. **`flags.enabled: false`** still means no flags at all (no audits, no provisioning, no planner flag work). **`management: external`** means flags may exist in the product, but another system owns them — the factory must not plan, create, or audit them.
+
+**Separate target runtime.** Each target uses its own task queue, home (worker + watcher ledger), `--repo`, `--policy`, and base ref. Example: personal `arober39/decor-agent` keeps `policy.decora.yaml` / `decora-factory` / `.factory/decora`; org `launchdarkly-demos/decor-agent` uses `policy.decora-org.yaml` (`flags.management: external`, draft-only PRs, `issue_triggers` for Alexis/agent logins), queue `decora-factory-org`, homes `.factory/decora-org` and `.factory/github-org`. See [running-a-second-target.md](running-a-second-target.md).
 
 ## 10. Past failures mapped to rules
 
@@ -291,6 +316,9 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 | #28 / `job-gh-5873513712-r6` | Required key existed without a production flag task; human plan send-back needed | §8 deterministic required flag task before tests, governance check and receipts |
 | #29 / `job-gh-5873513712-r7` | Guard rejected rewrites of a same-job stub; E9 asked Builder to change plan fields; stale task scope survived plan revisions | §4 base-content-only guard and actionable E9; §8 plan-file consistency; §11 replay_r7 |
 | r8 / `job-gh-5873513712-r8` | Policy-fixed key `decora-room-home-migration` treated as issue-supplied existing flag; GET 404 paused ensure_flag after verification | §8 ensure_flag: only intake `feature.flag_key` must pre-exist; fixed/planner keys are created when missing; §11 replay_r8 |
+| Org / Release Autopilot | Factory planned/audited/provisioned flags on a repo where LaunchDarkly Release Autopilot already owns them | Multiple targets + `flags.management=external`; §11 org-target replay |
+| #34 / org `job-gh-5918876477` | Unrecognized `## Problem` (five missing suites) dropped at intake; `---` footer leaked into `change_type` so `change_class` was unset | §9 R1–R4 issue body parsing; §11 issue34 intake replay |
+| #35 / org `job-gh-5918876477-r1` (run 2) | Builder payload lacked feature/plan detail so only 6 of 11 named offline suites were written; reviewer had plan but checked only acceptance bullets | §2.7 / B1 `request_context`; B2 planner verbatim concrete items; B3 reviewer checks `plan.steps`/`feature.hints`; §11 issue35 replay |
 
 ## 11. Acceptance criteria
 
@@ -323,6 +351,12 @@ Flag-audit verification failures bypass module-under-test routing: select the pl
 **#29 / replay_r7.** Task A creates a 35-line stub absent at base; task B replaces all of it and reaches DONE with a persisted draft PR. Base-file removal >50% still rejects atomically with checkpoint restore and actionable E9. Regressions exempt earlier job additions in existing files and prove stale plan files are removed from tasks/flag owners, empty tasks are removed with transitive dependency repointing, and normalization notes and idempotence are preserved.
 
 **r8 / replay_r8.** With a fake LaunchDarkly client: a policy-fixed key and GET 404 creates a boolean temporary default-off flag and the job proceeds past ensure_flag; an issue-supplied key and 404 still raises the existing-flag error; an existing flag (GET 200) is reused unchanged.
+
+**Org target / `flags.management=external`.** Replay an org job (mock harness; plan with a planner `flag_key` and a `provision_flag`-like task) under `policy.decora-org.yaml`: no flag task, `flag_key` stripped, no audit, `ensure_flag` skipped with zero LaunchDarkly client calls even in live mode, job reaches DONE with a draft PR body mentioning Release Autopilot. The same plan under `policy.decora.yaml` still requires and inserts the flag task and audits default-off. Cover policy validation errors, `issue_triggers` (allowlisted author without label once; non-allowlisted ignored; label by non-allowlisted collaborator ignored when `labelers` set; allowlisted writer triggers; bot `[bot]` matching; watcher without `--policy` unchanged), and job-id non-collision across targets.
+
+**#34 / issue intake.** Replay `tests/fixtures/org_issue3_r1_body.md` (org live run 1 body): a hint contains `Problem:` and all five suite names; `change_class == docs_only`; `change_type` has neither `---` nor the footer sentence; footer text appears as a `Footer:` hint; acceptance has four items. Cover unknown-section order, known-section stability, Context-without-duplication, fenced `---` not breaking sections, and planner/reviewer payloads that include the Problem text.
+
+**#35 / Builder request context.** Replay `tests/fixtures/org_issue3_r2_job.json` (org live run 2 feature+plan): the Builder payload for that run's task includes `request_context` whose plan steps name all of `test_api_project.py`, `test_board.py`, `test_events.py`, `test_flinch_gate.py`, `test_request_errors.py`, and the `Problem:` hint. Cap holds for a huge feature/plan (`request_context` ≤ cap, steps still present, `[truncated]` marker present). Planner/Builder/Reviewer instructions contain the B1–B3 rules. Personal-target flag/policy behavior is unchanged.
 
 **Live definition of done** (decor-agent, real model, `--ld live --push`):
 - A maintainer labels an issue with a high-risk migration plan (the #8/#12 room-home migration). The watcher starts the job without anyone typing a job ID.

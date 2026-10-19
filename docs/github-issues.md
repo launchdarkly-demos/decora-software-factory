@@ -50,6 +50,11 @@ the bridge home on persistent storage; one bridge process owns it at a time. Use
 separate home and queue for another target. The bridge uses github.com and the same
 Temporal address/namespace options as the other commands.
 
+To run a second target (for example the org repo with externally managed flags), see
+[running-a-second-target.md](running-a-second-target.md). Pass `--policy` on
+`watch-issues` to enable policy `issue_triggers` (author/labeler allowlists); without
+`--policy`, behavior stays label + collaborator-write only.
+
 ## Submit and review
 
 1. Open a GitHub issue using **Decora factory request**. Describe the goal, acceptance
@@ -139,6 +144,11 @@ one flag, matching configurable `^decora-[a-z0-9-]+$`. An issue-supplied key mus
 already exist in live LaunchDarkly and is reused, never created. Leave Flag key
 blank to let the planner choose a new key; the old placeholder is treated as blank.
 Multiple keys or invalid names return to planning.
+
+`flags.management: external` (see `policy.decora-org.yaml`) means another system owns
+flags and guarded releases: the factory does not plan, audit, or provision them.
+That differs from `flags.enabled: false` (no flags at all). Details:
+[running-a-second-target.md](running-a-second-target.md).
 
 Required guarded rollouts use a metric from `allowed_metric_keys`. A plan may name
 one, otherwise `default_metric_key` applies. In `policy.decora.yaml` the default is

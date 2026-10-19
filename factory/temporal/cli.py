@@ -53,6 +53,8 @@ def parser() -> argparse.ArgumentParser:
     issues.add_argument("--slug", required=True, help="GitHub owner/name matching the worker target")
     issues.add_argument("--label", default="factory:ready")
     issues.add_argument("--retry-label", default="factory:retry")
+    issues.add_argument("--policy", type=Path, default=None,
+                        help="optional policy; enables issue_triggers (authors/labelers/labels)")
     issues.add_argument("--home", type=Path, default=ROOT / ".factory" / "github")
     issues.add_argument("--interval", type=float, default=30)
     issues.add_argument("--once", action="store_true")
@@ -126,6 +128,10 @@ async def run_worker(client: Client, args: argparse.Namespace) -> None:
     repo, home = args.repo.resolve(), args.home.resolve()
     if not (repo / ".git").exists() and not any((home / "artifacts").glob("*.json")):
         raise FactoryError("worker needs a source repository or existing recovery artifacts")
+    if policy.issue_triggers.slug:
+        from factory.intake.load import check_issue_target
+
+        check_issue_target(repo, f"https://github.com/{policy.issue_triggers.slug}/issues/1")
 
     def create_factory() -> Factory:
         return Factory(

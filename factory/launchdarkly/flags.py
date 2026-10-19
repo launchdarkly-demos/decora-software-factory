@@ -7,8 +7,13 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from factory.errors import FactoryError
-from factory.governance.policy import Policy, flag_required, issue_supplied_flag_key, selected_flag_key
-from factory.launchdarkly.client import LaunchDarklyClient
+from factory.governance.policy import (
+    Policy,
+    flag_required,
+    flags_externally_managed,
+    issue_supplied_flag_key,
+    selected_flag_key,
+)
 from factory.launchdarkly.token import resolve_token, scrub
 from factory.models import FlagAssurance, JobState
 
@@ -52,6 +57,15 @@ class LaunchDarklyService:
     def ensure(self, job: JobState) -> FlagAssurance:
         key = _flag_key(job)
         rules = self.policy.launchdarkly
+        if flags_externally_managed(self.policy):
+            reason = self.policy.flags.external_reason
+            return FlagAssurance(
+                mode="external",
+                required=False,
+                key=None,
+                project_key=rules.project_key,
+                detail=f"Flags managed externally: {reason}",
+            )
         required = flag_required(self.policy, job)
         if not required:
             return FlagAssurance(
@@ -95,6 +109,8 @@ class LaunchDarklyService:
         return resolve_token(Path(__file__).resolve().parents[2])
 
     def _sync(self, job: JobState, key: str, token: str) -> FlagAssurance:
+        from factory.launchdarkly.client import LaunchDarklyClient
+
         rules = self.policy.launchdarkly
         project = rules.project_key
         environments = list(rules.environments)

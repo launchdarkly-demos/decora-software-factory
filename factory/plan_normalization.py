@@ -124,9 +124,31 @@ def normalize_test_tasks(plan: ImplementationPlan) -> None:
 def normalize_flag_task(policy: Policy, job: JobState, plan: ImplementationPlan) -> None:
     """Give a required flag one explicit production owner, without a plan send-back."""
     from factory.governance.flags import is_production_path
-    from factory.governance.policy import flag_keys, flag_required
+    from factory.governance.policy import flag_keys, flag_required, flags_externally_managed
 
     normalize_task_files(plan)
+    if flags_externally_managed(policy):
+        stripped: list[str] = []
+        if plan.flag_key:
+            stripped.append(f"flag_key={plan.flag_key!r}")
+            plan.flag_key = None
+        if plan.guarded_rollout_metric:
+            stripped.append(f"guarded_rollout_metric={plan.guarded_rollout_metric!r}")
+            plan.guarded_rollout_metric = None
+        if plan.flag_task_id:
+            stripped.append(f"flag_task_id={plan.flag_task_id!r}")
+            plan.flag_task_id = None
+        provision = [task for task in plan.tasks if task.id.startswith("provision_flag_")]
+        if provision:
+            removed = {task.id for task in provision}
+            stripped.append("provision_flag tasks " + ", ".join(sorted(removed)))
+            plan.tasks = [task for task in plan.tasks if task.id not in removed]
+            for task in plan.tasks:
+                task.depends_on = [dep for dep in task.depends_on if dep not in removed]
+        if stripped:
+            _note(plan, "External flag management: stripped " + "; ".join(stripped)
+                  + f" ({policy.flags.external_reason}).")
+        return
     keys = flag_keys(job, plan)
     if not flag_required(policy, job, plan) or len(keys) != 1:
         return

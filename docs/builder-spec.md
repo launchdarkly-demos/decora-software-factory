@@ -1,6 +1,6 @@
 # Decora factory Builder spec
 
-Status: approved, including Alexis’s #22 and #23 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
+Status: approved, including Alexis’s #22, #23 and #24 rules (Oct 18, 2026). It's based on `codex/builder-task-loop` at 989c214 (PR #17), issues #8, #9, #13, #14, #16, #18, #19 and #20, and the live runs `job-gh-5873513712` (Oct 16 to 18) and `job-gh-5913682653` (Oct 18).
 
 "Must" is a rule. "Should" is a strong default that policy can override. All numbers are policy settings unless they're marked as constants.
 
@@ -173,7 +173,11 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 - Run `pytest` on plan targets using `pytest-gate.ini` with the worktree root on `pythonpath`; then configured linters. Exit 4 names the missing path.
 - Each failed full verification reopens the owning task with E15 and consumes one job-level verification retry, without changing that task's `per_task_retries`. Persist the used count and routing history by task. After all allowed retries fail, E22 ends the job. Ordinary Builder corrections and the job call cap retain their own budgets.
 
+**Default-off flag evidence.** When policy requires default-off, accept either (a) `FLAG_DEFAULT = False` in production code, or (b) every evaluation of the selected flag key, literal or via a constant bound to it, supplies a literal false default (`default=False` or positional `False`). Any true default fails, even alongside false evidence. Failure messages must name both accepted forms and the offending source lines. Builder and Planner prompts must state the convention: define `FLAG_KEY` and `FLAG_DEFAULT = False` next to the key and evaluate with `default=FLAG_DEFAULT`.
+
 **Sending a failure back (quick or full verification).**
+Flag-audit verification failures bypass module-under-test routing: select the plan task owning the flag module, or the production file containing the selected key. Never select a tests-only task for a flag-audit failure. Preserve original ownership and the normal reopening/dependent-task rules below.
+
 1. Collect failing test files and repo traceback frames. Prefer the deepest non-test repo frame (closest to the failure). Also resolve repo modules imported by the failing test file, including relative imports and imports of symbols/submodules. Ignore external modules and unrelated command lines.
 2. Select the **last** task in plan order owning a candidate module under test (deepest frame takes precedence over imports). If no module owner is found, fall back to the previous rule: last task owning a mentioned traceback/test path, else last task in the plan.
 3. Add the identified repo modules to the fixing task's scope and supply their current text in its next context. Preserve original ownership when adding repair scope so later routing stays stable.
@@ -245,6 +249,7 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 | #18 | Watcher comment's command reached the wrong server | §9 commands include the real address |
 | #22 / `job-gh-5873513712-r1` | Tests-only task exhausted quick retries for migration defects; full verify hit E19; arrow anchor mangled to control; partial quick test exit 5 | §3 normalized unique fallback and escaped E5; §5 E13/E15/E22; §6 independent verify budget; §8 module routing and completion-only quick tests |
 | #23 / `job-gh-5873513712-r2` | Raw quick pytest inherited factory config; style lint exhausted verify retries; ANSI leaked into feedback | §4/§8 gate-only quick tests, safe fixes + format in checkpoint, correctness lint unless repo config; §5 plain tool output |
+| #24 / `job-gh-5873513712-r3` | Default-off evaluations rejected; flag repairs routed to tests-only task three times, ending at E22 | §8 both evidence forms, prompt convention and flag-owner routing |
 | Ops | Live runs blocked by manual job IDs, port and address mix-ups, project key changes | §9 rerun via label; §11 live definition of done |
 
 ## 11. Acceptance criteria
@@ -270,6 +275,8 @@ Nothing apart from E16, E17, E19, E20 and E22 may end a job. E19 still applies t
 16. **`replay_r1`**: reproduce `job-gh-5873513712-r1` end to end with its six-task plan, tests-only task 6 exposing task 5 migration defects, arrow/control anchor and partial no-tests part; reach DONE with a persisted draft PR record.
 
 17. **`replay_r2` (#23)**: reproduce `job-gh-5873513712-r2` end to end in the mock harness with raw Builder pytest commands, long lines, an unused test import and ANSI-colored output. Quick tests expose and route the actual store/home-id bug with budget left; safe fixes are checkpointed, feedback is plain, and the run reaches DONE with a persisted draft PR record. Unit tests cover command refusal/target extraction, gate isolation/cwd, safe fixes/config handling, lint scope and color suppression/stripping.
+
+**#24 / replay_r3.** Replay `get_flag(KEY, ctx, default=False)` with a bound key constant through the real audit and verification to DONE with a persisted draft PR. Unit regressions cover true and mixed defaults, constant-bound keys, accepted-form/offending-line diagnostics, and flag-owner routing instead of a tests-only task.
 
 **Live definition of done** (decor-agent, real model, `--ld live --push`):
 - A maintainer labels an issue with a high-risk migration plan (the #8/#12 room-home migration). The watcher starts the job without anyone typing a job ID.
